@@ -1,0 +1,50 @@
+{
+  "name": "advance-gba",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Advance — a modern browser-based GBA emulator with mGBA WebAssembly, ZIP import, save states, rewind, gamepad and touch controls.",
+  "license": "MIT",
+  "author": "hehuang139",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hehuang139/gba-emu.git"
+  },
+  "homepage": "https://github.com/hehuang139/gba-emu#readme",
+  "bugs": {
+    "url": "https://github.com/hehuang139/gba-emu/issues"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --experimental-strip-types --test src/lib/storage.test.ts src/lib/import-roms.test.ts",
+    "test:engine": "node scripts/test-engine.mjs",
+    "test:ui": "node scripts/test-ui.mjs",
+    "test:zip": "node scripts/test-zip-import.mjs",
+    "test:saves": "node scripts/test-save-flows.mjs",
+    "demo:build": "node scripts/create-demo.mjs",
+    "licenses:generate": "node scripts/generate-notices.mjs",
+    "screenshots": "node scripts/capture-showcase.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "fake-indexeddb": "^6.0.0",
+    "playwright": "^1.58.2",
+    "prettier": "^3.9.6",
+    "typescript": "~5.7.2",
+    "vite": "^6.1.0"
+  }
+}

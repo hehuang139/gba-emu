@@ -1,0 +1,48 @@
+name: 错误报告 / Bug report
+description: 帮助我们复现并修复模拟器的问题。
+title: '[Bug] '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索已有 issue，尽可能使用内置的 Star Orbit 试玩游戏复现。
+        请勿上传商业游戏 ROM、BIOS 或含个人信息的文件。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、浏览器及版本、设备类型，以及使用的版本或 commit。
+      placeholder: Windows 11 / Chrome 版本号 / 桌面端 / commit 或版本号
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 说明操作顺序、涉及的功能，以及是否可用内置试玩复现。
+      placeholder: |
+        1. 打开模拟器，点击「开始试玩」
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 原本期望发生什么？
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？可附页面截图、错误提示或浏览器控制台日志。
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 是否开启滤镜、倍速、倒带或使用手柄？是否涉及 ZIP、即时存档或 .sav？仅需文件大小与格式，无需上传 ROM。

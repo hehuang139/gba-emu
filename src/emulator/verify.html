@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>mGBA integration verification</title></head>
+<body style="background:#111;color:white">
+<canvas width="240" height="160"></canvas>
+<p>Development verification harness. Serve with Vite.</p>
+<script type="module">
+  import { createEmulator } from './index.ts'
+  window.events = []
+  window.emulator = createEmulator(document.querySelector('canvas'), {
+    onStatus: status => window.events.push(['status', status]),
+    onError: error => window.events.push(['error', error.message]),
+    onFps: fps => { window.fps = fps },
+    onSaveChange: data => { window.battery = data; window.saveChanges = (window.saveChanges || 0) + 1 },
+  })
+</script>
+</body>
+</html>

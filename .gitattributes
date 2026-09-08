@@ -1,0 +1,17 @@
+# Use consistent line endings across Windows, macOS, Linux and CI.
+* text=auto eol=lf
+
+# Preserve vendored runtime bytes and binary assets exactly.
+public/emulator/mgba.js -text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.wasm binary
+*.gba binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.zip binary

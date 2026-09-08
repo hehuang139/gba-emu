@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '11.19.0'
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify the original demo is reproducible
+        run: |
+          pnpm demo:build
+          git diff --exit-code -- public/demo/star-orbit.gba public/demo/star-orbit.symbols.json
+
+      - name: Verify dependency license notices
+        run: |
+          pnpm licenses:generate
+          git diff --exit-code -- public/licenses/DEPENDENCIES.txt
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Build production bundle
+        run: pnpm build
+
+      - name: Upload production bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: advance-gba-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run browser integration tests
+        shell: bash
+        env:
+          ENGINE_TEST_URL: http://127.0.0.1:5173
+          UI_TEST_URL: http://127.0.0.1:5173
+          ENGINE_SCREENSHOT_PATH: .artifacts/engine.png
+        run: |
+          mkdir -p .artifacts
+          pnpm exec vite --host 127.0.0.1 --port 5173 --strictPort > .artifacts/vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent "$UI_TEST_URL" > /dev/null; then
+              break
+            fi
+            if ! kill -0 "$vite_pid" 2>/dev/null || [ "$attempt" -eq 30 ]; then
+              cat .artifacts/vite.log
+              exit 1
+            fi
+            sleep 1
+          done
+          # Each suite uses only the original Star Orbit ROM or generated variants.
+          # All suites run even when an earlier suite fails, preserving their logs.
+          result=0
+          for suite in engine ui zip saves; do
+            pnpm "test:$suite" 2>&1 | tee ".artifacts/test-$suite.log" || result=1
+          done
+          exit "$result"
+
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-diagnostics
+          path: .artifacts/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14

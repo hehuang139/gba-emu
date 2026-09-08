@@ -1,0 +1,412 @@
+/// <reference types="vite/client" />
+/** Browser adapter for the locally bundled mGBA WebAssembly core. */
+export type GbaButton = 'A' | 'B' | 'L' | 'R' | 'Start' | 'Select' | 'Up' | 'Down' | 'Left' | 'Right'
+export type EmulatorStatus = 'idle' | 'loading' | 'running' | 'paused' | 'error' | 'disposed'
+
+export interface EmulatorOptions {
+  onStatus?: (status: EmulatorStatus) => void
+  onError?: (error: Error) => void
+  onProgress?: (message: string) => void
+  onFps?: (fps: number) => void
+  onSaveChange?: (bytes: Uint8Array) => void
+}
+
+export interface GbaEmulator {
+  readonly status: EmulatorStatus
+  readonly romName: string | null
+  readonly version: string
+  loadRom(data: Uint8Array, name: string): Promise<void>
+  start(): void
+  resume(): void
+  pause(): void
+  reset(): void
+  setVolume(volume: number): void
+  setSpeed(speed: 1 | 2 | 4): void
+  keyDown(button: GbaButton): void
+  keyUp(button: GbaButton): void
+  releaseAllKeys(): void
+  saveState(): Promise<Uint8Array>
+  loadState(bytes: Uint8Array): Promise<void>
+  exportSave(): Promise<Uint8Array | null>
+  importSave(bytes: Uint8Array): Promise<void>
+  /** Hold true to travel backwards through the recent gameplay buffer. */
+  setRewind(enabled: boolean): void
+  screenshot(): Promise<Blob>
+  dispose(): void
+}
+
+interface Core {
+  FS: {
+    mkdir(path: string): void
+    writeFile(path: string, bytes: Uint8Array): void
+    readFile(path: string): Uint8Array
+    unlink(path: string): void
+    analyzePath(path: string): { exists: boolean }
+    readdir(path: string): string[]
+  }
+  version: { projectName: string; projectVersion: string }
+  SDL2?: { audioContext?: AudioContext }
+  loadGame(path: string): boolean
+  pauseGame(): void
+  resumeGame(): void
+  quickReload(): void
+  quitGame(): void
+  buttonPress(button: string): void
+  buttonUnpress(button: string): void
+  toggleInput(enabled: boolean): void
+  setVolume(volume: number): void
+  setFastForwardMultiplier(speed: number): void
+  setCoreSettings(settings: Record<string, number | boolean>): void
+  toggleRewind(enabled: boolean): void
+  saveState(slot: number): boolean
+  loadState(slot: number): boolean
+  getSave(): Uint8Array | null
+  screenshot(name: string): boolean
+  addCoreCallbacks(callbacks: Record<string, (() => void) | null>): void
+  setLogger(callback: ((entry: { level: string; category: string; message: string }) => void) | null): void
+  /** Small, documented host lifecycle additions to the upstream JS wrapper. */
+  hostIsGameReady(): boolean
+  hostDispose(): void
+}
+
+type CoreFactory = (options: {
+  canvas: HTMLCanvasElement
+  locateFile: (name: string) => string
+  print: (message: string) => void
+  printErr: (message: string) => void
+  onAbort: (message: string) => void
+}) => Promise<Core>
+
+const ROM_PATH = '/data/games/current.gba'
+const SAVE_PATH = '/data/saves/current.sav'
+const STATE_PATH = '/data/states/current.ss1'
+const BUTTONS: GbaButton[] = ['A', 'B', 'L', 'R', 'Start', 'Select', 'Up', 'Down', 'Left', 'Right']
+const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+function copy(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(bytes)
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array): boolean {
+  return !!a && a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptions = {}): GbaEmulator {
+  let status: EmulatorStatus = 'idle'
+  let romName: string | null = null
+  let core: Core | null = null
+  let initializing: Promise<Core> | null = null
+  let generation = 0
+  let volume = 0.65
+  let speed: 1 | 2 | 4 = 1
+  let lastSave: Uint8Array | null = null
+  let batteryTimer: number | undefined
+  let fpsFrames = 0
+  let fpsStart = 0
+  let pendingBattery = false
+  let coreError: Error | null = null
+
+  const setStatus = (next: EmulatorStatus) => {
+    if (status === next || status === 'disposed') return
+    status = next
+    options.onStatus?.(next)
+  }
+  const assertAlive = () => {
+    if (status === 'disposed') throw new Error('模拟器已关闭，请重新打开游戏。')
+  }
+  const assertGame = (): Core => {
+    assertAlive()
+    if (!core || !romName || (status !== 'running' && status !== 'paused')) {
+      throw new Error('请先载入一个 GBA 游戏。')
+    }
+    return core
+  }
+  const reportError = (value: unknown): Error => {
+    const error = value instanceof Error ? value : new Error(String(value))
+    if (status !== 'disposed') {
+      coreError = error
+      setStatus('error')
+      options.onError?.(error)
+    }
+    return error
+  }
+  const captureBattery = () => {
+    if (!core || !romName || status === 'disposed') return null
+    const data = core.getSave()
+    if (!data?.length) return null
+    const bytes = copy(data)
+    if (!sameBytes(lastSave, bytes)) {
+      lastSave = bytes
+      options.onSaveChange?.(copy(bytes))
+    }
+    return bytes
+  }
+  const clearSessionFiles = () => {
+    if (!core) return
+    for (const directory of ['/data/games', '/data/saves', '/data/states', '/autosave', '/data/screenshots']) {
+      for (const name of core.FS.readdir(directory)) {
+        if (name !== '.' && name !== '..') core.FS.unlink(`${directory}/${name}`)
+      }
+    }
+  }
+  const releaseAllKeys = () => {
+    if (!core || status === 'disposed') return
+    for (const button of BUTTONS) core.buttonUnpress(button)
+    core.toggleRewind(false)
+  }
+  const resumeAudio = () => {
+    const context = core?.SDL2?.audioContext
+    if (context?.state === 'suspended') void context.resume().catch(() => {})
+  }
+  const initialize = (): Promise<Core> => {
+    if (initializing) return initializing
+    initializing = (async () => {
+      if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+        throw new Error('模拟核心需要跨源隔离。请使用项目的开发服务，或为网站配置 COOP 和 COEP 响应头。')
+      }
+      options.onProgress?.('正在加载 mGBA 模拟核心…')
+      const base = new URL(`${import.meta.env.BASE_URL}emulator/`, window.location.href)
+      const entry = new URL('mgba.js', base).href
+      const { default: factory } = await import(/* @vite-ignore */ entry) as { default: CoreFactory }
+      assertAlive()
+      const instance = await factory({
+        canvas,
+        locateFile: (name) => new URL(name, base).href,
+        print: () => {},
+        printErr: (message) => console.warn('[mGBA]', message),
+        onAbort: (message) => { reportError(new Error(`mGBA 核心异常：${message}`)) },
+      })
+      if (status === 'disposed') {
+        instance.hostDispose()
+        throw new Error('模拟器已关闭。')
+      }
+      core = instance
+      // The application persists data in its own IndexedDB. Use MEMFS here to
+      // prevent stale upstream IDBFS data from silently restoring other games.
+      for (const directory of ['/data', '/data/games', '/data/saves', '/data/states', '/data/cheats', '/data/screenshots', '/data/patches', '/autosave']) {
+        instance.FS.mkdir(directory)
+      }
+      instance.toggleInput(false)
+      instance.setCoreSettings({
+        rewindEnable: true,
+        rewindBufferCapacity: 600,
+        rewindBufferInterval: 1,
+        autoSaveStateEnable: false,
+        restoreAutoSaveStateOnLoad: false,
+        allowOpposingDirections: false,
+        showFpsCounter: false,
+        baseFpsTarget: 60,
+      })
+      instance.setLogger((entry) => {
+        if (entry.level === 'FATAL') reportError(new Error(`游戏运行异常：${entry.message}`))
+      })
+      return instance
+    })().catch((error: unknown) => {
+      initializing = null
+      throw error
+    })
+    return initializing
+  }
+  const waitForGame = async (ticket: number) => {
+    const deadline = performance.now() + 10000
+    // loadGame schedules creation of the emulation thread on the next frame.
+    // Waiting for that thread prevents quick save/import from racing startup.
+    while (!core?.hostIsGameReady()) {
+      assertAlive()
+      if (ticket !== generation) throw new Error('游戏载入已取消。')
+      if (coreError) throw coreError
+      if (performance.now() > deadline) throw new Error('游戏启动超时，请保持页面可见后重试。')
+      await delay(20)
+    }
+    await delay(30)
+    assertAlive()
+    if (ticket !== generation) throw new Error('游戏载入已取消。')
+  }
+  const attachCallbacks = () => {
+    fpsFrames = 0
+    fpsStart = performance.now()
+    core?.addCoreCallbacks({
+      videoFrameEndedCallback: () => {
+        if (status !== 'running') return
+        fpsFrames++
+        const elapsed = performance.now() - fpsStart
+        if (elapsed >= 1000) {
+          options.onFps?.(Math.round(fpsFrames * 1000 / elapsed))
+          fpsStart = performance.now()
+          fpsFrames = 0
+        }
+      },
+      coreCrashedCallback: () => { reportError(new Error('当前游戏触发了模拟核心异常，请重置或尝试其他 ROM。')) },
+      saveDataUpdatedCallback: () => { pendingBattery = true },
+    })
+    window.clearInterval(batteryTimer)
+    batteryTimer = window.setInterval(() => {
+      if (status === 'running' && pendingBattery) {
+        pendingBattery = false
+        try { captureBattery() } catch (error) { console.warn('[mGBA] 读取存档失败', error) }
+      }
+    }, 1000)
+  }
+
+  const emulator: GbaEmulator = {
+    get status() { return status },
+    get romName() { return romName },
+    get version() { return core ? `${core.version.projectName} ${core.version.projectVersion}` : 'mGBA · WebAssembly' },
+    async loadRom(data, name) {
+      assertAlive()
+      if (data.byteLength < 192 || data.byteLength > 32 * 1024 * 1024) {
+        throw new Error('无效的 GBA ROM：文件大小应介于 192 字节与 32 MB 之间。')
+      }
+      if (status === 'loading') throw new Error('正在载入游戏，请稍候。')
+      const ticket = ++generation
+      if (romName && core) {
+        releaseAllKeys()
+        core.pauseGame()
+        captureBattery()
+        core.quitGame()
+      }
+      romName = null
+      coreError = null
+      lastSave = null
+      pendingBattery = false
+      window.clearInterval(batteryTimer)
+      setStatus('loading')
+      try {
+        const instance = await initialize()
+        assertAlive()
+        if (ticket !== generation) throw new Error('游戏载入已取消。')
+        options.onProgress?.('正在启动游戏…')
+        clearSessionFiles()
+        instance.FS.writeFile(ROM_PATH, copy(data))
+        if (!instance.loadGame(ROM_PATH)) throw new Error('无法识别这个 ROM，请导入有效的 .gba 游戏文件。')
+        // The upstream registration function mutates callback vectors without
+        // locking. Install before the next animation frame starts the CPU thread.
+        attachCallbacks()
+        await waitForGame(ticket)
+        romName = name
+        instance.toggleInput(false)
+        instance.setVolume(volume)
+        instance.setFastForwardMultiplier(speed)
+        resumeAudio()
+        setStatus('running')
+        options.onProgress?.('')
+      } catch (error) {
+        if (core && status !== 'disposed') core.quitGame()
+        throw reportError(error)
+      }
+    },
+    start() { emulator.resume() },
+    resume() {
+      if (status !== 'paused') return
+      assertGame().resumeGame()
+      resumeAudio()
+      fpsFrames = 0
+      fpsStart = performance.now()
+      setStatus('running')
+    },
+    pause() {
+      if (status !== 'running') return
+      releaseAllKeys()
+      assertGame().pauseGame()
+      captureBattery()
+      setStatus('paused')
+      options.onFps?.(0)
+    },
+    reset() {
+      const instance = assertGame()
+      releaseAllKeys()
+      captureBattery()
+      instance.quickReload()
+      instance.setVolume(volume)
+      instance.setFastForwardMultiplier(speed)
+      if (status === 'paused') instance.pauseGame()
+    },
+    setVolume(value) {
+      volume = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
+      if (status !== 'disposed') core?.setVolume(volume)
+      if (volume > 0 && status === 'running') resumeAudio()
+    },
+    setSpeed(value) {
+      speed = value === 2 || value === 4 ? value : 1
+      if (status !== 'disposed') core?.setFastForwardMultiplier(speed)
+    },
+    keyDown(button) {
+      if (status === 'running') {
+        core?.buttonPress(button)
+        resumeAudio()
+      }
+    },
+    keyUp(button) { if (status !== 'disposed') core?.buttonUnpress(button) },
+    releaseAllKeys,
+    async saveState() {
+      const instance = assertGame()
+      if (!instance.saveState(1)) throw new Error('即时存档失败，请稍后重试。')
+      return copy(instance.FS.readFile(STATE_PATH))
+    },
+    async loadState(bytes) {
+      const instance = assertGame()
+      if (!bytes.length || bytes.length > 16 * 1024 * 1024) throw new Error('即时存档文件大小无效。')
+      releaseAllKeys()
+      instance.FS.writeFile(STATE_PATH, copy(bytes))
+      if (!instance.loadState(1)) throw new Error('无法读取此即时存档，请确认它属于当前游戏与 mGBA 核心。')
+      if (status === 'paused') instance.pauseGame()
+      pendingBattery = true
+    },
+    async exportSave() {
+      assertGame()
+      return captureBattery()
+    },
+    async importSave(bytes) {
+      const instance = assertGame()
+      if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('电池存档文件大小无效。')
+      const wasPaused = status === 'paused'
+      const ticket = ++generation
+      releaseAllKeys()
+      instance.quitGame()
+      setStatus('loading')
+      try {
+        instance.FS.writeFile(SAVE_PATH, copy(bytes))
+        if (!instance.loadGame(ROM_PATH)) throw new Error('导入存档后重新启动游戏失败。')
+        attachCallbacks()
+        await waitForGame(ticket)
+        instance.toggleInput(false)
+        instance.setVolume(volume)
+        instance.setFastForwardMultiplier(speed)
+        const changed = !sameBytes(lastSave, bytes)
+        lastSave = copy(bytes)
+        if (changed) options.onSaveChange?.(copy(bytes))
+        setStatus('running')
+        if (wasPaused) emulator.pause()
+        else resumeAudio()
+      } catch (error) {
+        throw reportError(error)
+      }
+    },
+    setRewind(enabled) { if (status === 'running') core?.toggleRewind(enabled) },
+    async screenshot() {
+      const instance = assertGame()
+      // Capture from the core framebuffer, not WebGL's discarded backbuffer.
+      const name = 'capture.png'
+      if (!instance.screenshot(name)) throw new Error('截图失败，请稍后重试。')
+      const path = `/data/screenshots/${name}`
+      const bytes = copy(instance.FS.readFile(path))
+      instance.FS.unlink(path)
+      return new Blob([bytes], { type: 'image/png' })
+    },
+    dispose() {
+      if (status === 'disposed') return
+      generation++
+      releaseAllKeys()
+      window.clearInterval(batteryTimer)
+      if (core) {
+        try { core.pauseGame(); captureBattery() } catch { /* A crashed core may no longer expose its save. */ }
+        try { core.hostDispose() } catch (error) { console.warn('[mGBA] 关闭核心失败', error) }
+        core = null
+      }
+      status = 'disposed'
+      romName = null
+      options.onStatus?.('disposed')
+    },
+  }
+  return emulator
+}
