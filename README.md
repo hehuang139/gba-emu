@@ -25,21 +25,55 @@ Advance 把熟悉的掌机体验带到浏览器：整理游戏、连接手柄、
 
 ## 效果预览
 
-以下均为实际界面截图，游戏画面来自仓库内的原创试玩 ROM。
+以下均为实际界面截图，游戏画面来自仓库内的原创试玩 ROM。除上方游戏库首页外，还展示存档、控制器、设置、帮助和移动端等主要界面。
 
-| 游戏进行中 | 即时存档 |
-| :---: | :---: |
-| ![桌面播放器与 Star Orbit 真实运行画面](docs/images/desktop-player.png) | ![带画面预览的即时存档槽](docs/images/save-states.png) |
-| 游戏画面、播放控制和快捷操作 | 自动槽与手动槽，保存每一次探索 |
+### 1. 存档管理与即时存档
 
-<details>
-<summary><strong>查看手机触控界面</strong></summary>
-<br />
+存档管理页集中展示各游戏的自动与手动存档，包括画面预览、保存时间，以及继续游戏、导出和删除操作。
+
+![存档管理页：自动与手动存档卡片、画面预览、继续游戏和导出操作](docs/images/save-manager.png)
+
+游戏内的即时存档面板提供 **1 个自动槽与 5 个手动槽**，可保存、读取、导入和导出即时存档，也可备份或导入游戏内的 `.sav` 存档。
+
 <p align="center">
-  <img src="docs/images/mobile-player.png" width="320" alt="Advance 手机播放器与触屏虚拟手柄" />
+  <a href="docs/images/save-states.png"><img src="docs/images/save-states.png" width="760" alt="即时存档面板：自动槽、手动槽和存档导入导出" /></a>
 </p>
 
-</details>
+### 2. 控制器与模拟器设置
+
+| 控制器设置 | 模拟器设置 |
+| :---: | :---: |
+| ![控制器设置：键盘映射、标准手柄说明与触屏按键开关](docs/images/controller-settings.png) | ![模拟器设置：画面显示、运行速度、音量、自动存档与触屏手柄](docs/images/emulator-settings.png) |
+| 点击键位重新映射，支持恢复默认；可切换触屏按键显示。 | 选择画面风格、1× / 2× / 4× 速度、游戏音量与自动存档，偏好自动保存。 |
+
+### 3. 帮助与快捷键
+
+内置使用指南涵盖 GBA / ZIP 导入、键盘操作与存档方式，并集中列出暂停、快速存取档、快进、倒带和全屏快捷键。
+
+<p align="center">
+  <a href="docs/images/help-shortcuts.png"><img src="docs/images/help-shortcuts.png" width="760" alt="帮助与快捷键：导入指南、操作说明、存档说明和快捷键速查" /></a>
+</p>
+
+### 4. 游戏播放与画面风格
+
+| 原生像素 | 复古 CRT |
+| :---: | :---: |
+| ![桌面播放器与 Star Orbit 的原生像素运行画面](docs/images/desktop-player.png) | ![Star Orbit 播放器启用复古 CRT 扫描线后的画面](docs/images/display-crt.png) |
+| 播放控制、快速存取档、倍速、截图和全屏操作集中在画面下方。 | 在设置中切换 CRT 扫描线，也可选择原生像素或柔和平滑显示。 |
+
+### 5. 收藏与游戏库列表
+
+在「我的收藏」中集中查看喜欢的游戏；列表视图显示游戏信息与游玩记录，并保留搜索、排序和启动入口。
+
+![我的收藏列表：游戏信息、游玩记录、搜索、排序与启动入口](docs/images/favorites.png)
+
+### 6. 手机触控
+
+移动端布局提供方向键、A / B、L / R、Start / Select 等触屏控件，播放工具栏也可直接操作。
+
+<p align="center">
+  <a href="docs/images/mobile-player.png"><img src="docs/images/mobile-player.png" width="320" alt="Advance 手机播放器、播放工具栏与触屏虚拟手柄" /></a>
+</p>
 
 ## 功能特性
 

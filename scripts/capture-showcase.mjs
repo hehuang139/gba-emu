@@ -64,6 +64,10 @@ async function capture(page, filename, selector) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${filename}: no horizontal overflow`)
   const box = selector ? await page.locator(selector).boundingBox() : null
   const clip = box ? { x: box.x - 24, y: box.y - 24, width: box.width + 48, height: box.height + 48 } : undefined
+  if (clip) {
+    const viewport = page.viewportSize()
+    assert.ok(clip.x >= 0 && clip.y >= 0 && clip.x + clip.width <= viewport.width && clip.y + clip.height <= viewport.height, `${filename}: the complete panel fits in the screenshot`)
+  }
   await page.screenshot({ path: fileURLToPath(new URL(filename, output)), fullPage: false, animations: 'disabled', ...(clip ? { clip } : {}) })
   screenshots.push(filename)
 }
@@ -94,12 +98,53 @@ try {
   await desktop.getByRole('button', { name: '开始试玩', exact: true }).click()
   await running(desktop)
   await desktop.evaluate(() => window.scrollTo(0, 0))
-  await capture(desktop, 'desktop-player.png')
+  await capture(desktop, 'desktop-player.png', '.player-panel')
 
   await desktop.getByRole('button', { name: '管理即时存档', exact: true }).click()
   await desktop.locator('.save-slot.filled img').nth(2).waitFor()
   assert.equal(await desktop.locator('.save-slot.filled').count(), 3, 'one automatic and two manual states were actually saved')
   await capture(desktop, 'save-states.png', '.wide-modal')
+  await desktop.getByRole('button', { name: '关闭对话框', exact: true }).click()
+
+  await desktop.getByRole('button', { name: '控制器设置', exact: true }).click()
+  await desktop.getByRole('heading', { name: '找到你的顺手操作', exact: true }).waitFor()
+  assert.equal(await desktop.locator('.key-binding').count(), 10, 'all GBA button mappings are visible')
+  await capture(desktop, 'controller-settings.png', '.modal')
+  await desktop.getByRole('button', { name: '关闭对话框', exact: true }).click()
+
+  await desktop.getByRole('button', { name: '模拟器设置', exact: true }).click()
+  await desktop.getByRole('combobox', { name: '设置画面显示', exact: true }).selectOption('crt')
+  assert.equal(await desktop.getByRole('switch', { name: '自动存档与恢复', exact: true }).getAttribute('aria-checked'), 'true')
+  await capture(desktop, 'emulator-settings.png', '.modal')
+  await desktop.getByRole('button', { name: '关闭对话框', exact: true }).click()
+  await running(desktop)
+  await desktop.locator('.filter-crt canvas').waitFor()
+  await desktop.evaluate(() => window.scrollTo(0, 0))
+  await capture(desktop, 'display-crt.png', '.player-panel')
+  await desktop.getByRole('combobox', { name: '画面滤镜', exact: true }).selectOption('pixel')
+
+  await desktop.getByRole('button', { name: '返回游戏库', exact: true }).click()
+  await desktop.getByRole('button', { name: '开始试玩', exact: true }).waitFor()
+  await desktop.getByRole('button', { name: '存档管理', exact: true }).click()
+  await desktop.locator('.state-card').nth(2).waitFor()
+  assert.equal(await desktop.locator('.state-card').count(), 3, 'save management shows all real saved states')
+  await desktop.evaluate(() => window.scrollTo(0, 0))
+  await capture(desktop, 'save-manager.png')
+
+  await desktop.getByRole('button', { name: /^游戏库/ }).click()
+  await desktop.getByRole('button', { name: '收藏 Star Orbit · 星际漫游', exact: true }).click()
+  await desktop.getByRole('button', { name: '我的收藏' }).click()
+  await desktop.getByRole('button', { name: '列表视图', exact: true }).click()
+  await desktop.getByRole('textbox', { name: '搜索游戏', exact: true }).fill('Star')
+  assert.equal(await desktop.locator('.games-list .game-card').count(), 1, 'favorite list and search show the real game')
+  assert.equal(await desktop.locator('.favorite-button.is-favorite').count(), 1)
+  await capture(desktop, 'favorites.png')
+
+  await desktop.getByRole('button', { name: '帮助与快捷键', exact: false }).click()
+  await desktop.getByRole('heading', { name: '准备好，开始冒险', exact: true }).waitFor()
+  assert.equal(await desktop.locator('.shortcut-grid kbd').count(), 6, 'help exposes all simulator shortcuts')
+  await capture(desktop, 'help-shortcuts.png', '.modal')
+  await desktop.getByRole('button', { name: '关闭对话框', exact: true }).click()
 
   const mobile = await newPage({ width: 390, height: 844 }, true)
   await mobile.getByRole('button', { name: '开始试玩', exact: true }).click()
@@ -108,6 +153,7 @@ try {
   assert.equal(await mobile.locator('.touch-controls').isVisible(), true)
   await mobile.evaluate(() => window.scrollTo(0, 0))
   await capture(mobile, 'mobile-player.png')
+  assert.equal(screenshots.length, 10, 'the showcase covers all ten documented views')
   assert.deepEqual(errors, [], 'showcase flows have no uncaught browser errors')
   console.log(JSON.stringify({ passed: true, url: baseURL, screenshots, output: fileURLToPath(output) }, null, 2))
 } finally {

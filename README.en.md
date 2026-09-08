@@ -25,19 +25,55 @@ No account or user-supplied BIOS is required. Try **Star Orbit**, an original, M
 
 ## Screenshots
 
-All screenshots show the real application. Game footage comes from the included original homebrew ROM.
+All screenshots show the real application. Game footage comes from the included original homebrew ROM. Alongside the library overview above, the gallery covers saves, controls, settings, help and mobile play.
 
-| Playing Star Orbit | Save states |
-| :---: | :---: |
-| ![Desktop player](docs/images/desktop-player.png) | ![Save state slots with previews](docs/images/save-states.png) |
+### 1. Save manager and save states
 
-<details>
-<summary>Mobile touch controls</summary>
-<br />
+The save manager collects automatic and manual states across games, with screenshot previews, timestamps and actions to resume, export or delete a state.
+
+![Save manager with automatic and manual states, screenshot previews, resume and export actions](docs/images/save-manager.png)
+
+The in-game save panel provides **one automatic slot and five manual slots**. Save, load, import and export states, or back up and import a game's battery save (`.sav`).
+
 <p align="center">
-  <img src="docs/images/mobile-player.png" width="320" alt="Mobile player and on-screen controls" />
+  <a href="docs/images/save-states.png"><img src="docs/images/save-states.png" width="760" alt="Save state panel with automatic and manual slots, import and export controls" /></a>
 </p>
-</details>
+
+### 2. Controller and emulator settings
+
+| Controller settings | Emulator settings |
+| :---: | :---: |
+| ![Controller settings with keyboard mappings, standard gamepad guidance and touch control toggle](docs/images/controller-settings.png) | ![Emulator settings with display style, speed, volume, automatic saves and touch controls](docs/images/emulator-settings.png) |
+| Click a key to remap it, restore default bindings or toggle on-screen controls. | Choose display style, 1× / 2× / 4× speed, volume and automatic saves. Preferences are saved automatically. |
+
+### 3. Help and keyboard shortcuts
+
+The built-in guide explains GBA / ZIP imports, keyboard controls and saves, with a quick reference for pause, quick save/load, fast-forward, rewind and fullscreen.
+
+<p align="center">
+  <a href="docs/images/help-shortcuts.png"><img src="docs/images/help-shortcuts.png" width="760" alt="Help guide with import instructions, controls, save guidance and keyboard shortcuts" /></a>
+</p>
+
+### 4. Gameplay and display styles
+
+| Native pixels | Retro CRT |
+| :---: | :---: |
+| ![Desktop player running Star Orbit with native pixel rendering](docs/images/desktop-player.png) | ![Star Orbit running with the retro CRT scanline filter](docs/images/display-crt.png) |
+| Playback, quick save/load, speed, screenshot and fullscreen controls sit below the screen. | Switch to CRT scanlines in settings, or choose native pixels or smooth scaling. |
+
+### 5. Favorites and library list
+
+Keep favorite games together. List view shows game details and play history, with search, sorting and launch controls available.
+
+![Favorites in list view with game details, play history, search, sorting and launch controls](docs/images/favorites.png)
+
+### 6. Mobile touch controls
+
+The mobile layout includes a D-pad, A / B, L / R and Start / Select touch buttons, alongside an accessible playback toolbar.
+
+<p align="center">
+  <a href="docs/images/mobile-player.png"><img src="docs/images/mobile-player.png" width="320" alt="Advance mobile player with playback toolbar and on-screen gamepad" /></a>
+</p>
 
 ## Features
 
