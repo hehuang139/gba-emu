@@ -18,4 +18,14 @@ Advance 的 mGBA 线程核心要求页面启用跨源隔离，并依赖 SharedAr
 
 ## 当前结论
 
-仓库自动化检查目前以 Chromium 为主，Firefox、Safari、Android 和 iOS 的结论必须由真实设备记录后再填写。未记录的环境不视为已支持。应用要求 HTTPS 或 localhost，以及 `Cross-Origin-Opener-Policy: same-origin` 和 `Cross-Origin-Embedder-Policy: require-corp`；普通 HTTP 局域网地址无法启动线程核心。
+| 日期 | 浏览器 / 系统 | 环境与测试方式 | 验证结果 | 未验证范围 |
+| --- | --- | --- | --- | --- |
+| 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | Vite localhost，COOP / COEP；Playwright headless，1440×1024 与 390×844 视口，启用 SwiftShader | 环境检查六项、试玩启动、键盘、存取档、刷新恢复、ZIP 导入、倒带与 worker 释放通过 | SwiftShader 不能代表真实 GPU 性能；手机视口不能代表 Android / iOS；音频测试只验证程序状态，未人工试听 |
+| 待验证 | Firefox | 待填写版本和设备 | 未验证 | 完整流程 |
+| 待验证 | Safari / macOS | 待填写版本和设备 | 未验证 | 完整流程 |
+| 待验证 | Chrome / Android | 需要真实手机 | 未验证 | 触控、多点输入、音频、性能 |
+| 待验证 | Safari / iOS | 需要真实 iPhone / iPad | 未验证 | 触控、安全区、音频、性能 |
+
+复现上述 Edge 记录：先运行 `pnpm dev`，另一个 PowerShell 终端设置 `$env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'`，再运行 `pnpm test:engine`、`pnpm test:ui`、`pnpm test:zip` 和 `pnpm test:saves`。UI 检查生成环境面板的桌面和手机尺寸截图。
+
+未记录的环境不视为已支持。应用要求 HTTPS 或 localhost，以及 `Cross-Origin-Opener-Policy: same-origin` 和 `Cross-Origin-Embedder-Policy: require-corp`；普通 HTTP 局域网地址无法启动线程核心。不同浏览器、驱动和部署仍需独立实测。

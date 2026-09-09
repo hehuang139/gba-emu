@@ -152,6 +152,43 @@ try {
     'mobile player must not overflow',
   )
   assert.deepEqual(errors, [], 'no uncaught browser errors')
+
+  const deniedStorage = await browser.newContext()
+  await deniedStorage.addInitScript(() => {
+    IDBFactory.prototype.open = () => {
+      throw new DOMException('Site storage denied', 'SecurityError')
+    }
+  })
+  const deniedPage = await deniedStorage.newPage()
+  deniedPage.on('pageerror', (error) => errors.push(error.message))
+  await deniedPage.goto(url)
+  await deniedPage.getByRole('button', { name: '环境检查', exact: true }).click()
+  assert.match(
+    await deniedPage.locator('.compatibility-check.error').innerText(),
+    /IndexedDB.*拒绝/s,
+  )
+  await deniedStorage.close()
+
+  const pendingQuota = await browser.newContext()
+  await pendingQuota.addInitScript(() => {
+    StorageManager.prototype.estimate = () => new Promise(() => {})
+  })
+  const quotaPage = await pendingQuota.newPage()
+  quotaPage.on('pageerror', (error) => errors.push(error.message))
+  await quotaPage.goto(url)
+  await quotaPage.waitForFunction(() => !document.querySelector('.hero-actions button')?.disabled)
+  await quotaPage.getByRole('button', { name: '环境检查', exact: true }).click()
+  assert.match(
+    await quotaPage.locator('.compatibility-check.warning').innerText(),
+    /存储配额检查超时/,
+  )
+  assert.equal(
+    await quotaPage.locator('.game-card').count(),
+    1,
+    'quota failure must not hide the game library',
+  )
+  await pendingQuota.close()
+  assert.deepEqual(errors, [], 'diagnostic failures must not throw browser errors')
   console.log(
     JSON.stringify(
       {
@@ -171,6 +208,9 @@ try {
           'mobile navigation',
           'touch controls',
           'responsive overflow',
+          'desktop and mobile compatibility panel',
+          'denied IndexedDB diagnostics',
+          'quota timeout preserves library',
         ],
         screenshots: artifacts.pathname,
       },

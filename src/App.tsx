@@ -212,9 +212,22 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
+    void probeCompatibility()
+      .then((report) => {
+        if (!cancelled) setCompatibility(report)
+      })
+      .catch(() => {
+        if (!cancelled) notify('环境检查暂时无法完成，请刷新后重试', true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [notify])
+
+  useEffect(() => {
+    let cancelled = false
     async function init() {
       try {
-        setCompatibility(await probeCompatibility())
         let list = await db.getGames()
         if (!list.some(isDemo)) {
           const response = await fetch('/demo/star-orbit.gba')

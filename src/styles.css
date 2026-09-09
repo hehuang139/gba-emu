@@ -462,14 +462,14 @@ button:disabled:hover {
   background: #e5b875;
 }
 .compatibility-check strong,
-.compatibility-check span,
+.compatibility-check > div > span,
 .compatibility-check small {
   display: block;
 }
 .compatibility-check strong {
   font-size: 12px;
 }
-.compatibility-check span {
+.compatibility-check > div > span {
   margin-top: 3px;
   color: var(--muted);
   font-size: 11px;
