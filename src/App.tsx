@@ -940,6 +940,8 @@ export default function App() {
               onClick={() => setCompatibilityOpen((open) => !open)}
               aria-expanded={compatibilityOpen}
               aria-controls="compatibility-panel"
+              aria-label="环境检查"
+              title="环境检查"
               disabled={!compatibility}
             >
               {compatibility ? (
