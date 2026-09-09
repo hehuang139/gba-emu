@@ -382,6 +382,105 @@ button:disabled:hover {
 .connection.connected {
   color: var(--mint);
 }
+.environment-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.environment-button:hover,
+.environment-button[aria-expanded='true'] {
+  color: var(--mint);
+  background: #242b2b;
+}
+.environment-button.warning {
+  color: #e5b875;
+}
+.compatibility-panel {
+  margin: 0 34px;
+  padding: 16px 18px;
+  border: 1px solid #3d4a43;
+  border-radius: 8px;
+  background: #1b2421;
+}
+.compatibility-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.compatibility-heading strong {
+  display: block;
+  font-size: 14px;
+}
+.compatibility-heading p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.compatibility-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.compatibility-check {
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #202a26;
+}
+.compatibility-check.error {
+  background: #332525;
+}
+.compatibility-check.warning {
+  background: #302d23;
+}
+.compatibility-mark {
+  display: grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  color: #14231b;
+  background: var(--mint);
+  font-size: 13px;
+  font-weight: 700;
+}
+.compatibility-check.error .compatibility-mark {
+  color: #321919;
+  background: #ef9c9c;
+}
+.compatibility-check.warning .compatibility-mark {
+  color: #322817;
+  background: #e5b875;
+}
+.compatibility-check strong,
+.compatibility-check > div > span,
+.compatibility-check small {
+  display: block;
+}
+.compatibility-check strong {
+  font-size: 12px;
+}
+.compatibility-check > div > span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.compatibility-check small {
+  margin-top: 5px;
+  color: #e5b875;
+  font-size: 10px;
+  line-height: 1.4;
+}
 .topbar-divider {
   height: 16px;
   width: 1px;
@@ -2696,6 +2795,21 @@ kbd {
   }
 }
 @media (max-width: 800px) {
+  .compatibility-panel {
+    margin: 0 18px;
+  }
+  .compatibility-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 500px) {
+  .compatibility-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 800px) {
   .sidebar {
     width: 190px;
     padding-top: 29px;
@@ -2959,6 +3073,12 @@ kbd {
   }
   .shortcut-button > span {
     display: none;
+  }
+  .environment-button > span {
+    display: none;
+  }
+  .environment-button {
+    padding: 6px;
   }
   .connection {
     font-size: 9px;

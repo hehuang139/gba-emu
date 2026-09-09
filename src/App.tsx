@@ -48,6 +48,8 @@ import { extractRomFiles } from './lib/import-roms'
 import type { Game, SaveState } from './lib/types'
 import { defaultBindings, keyLabel, readSettings } from './lib/preferences'
 import type { Settings } from './lib/preferences'
+import { probeCompatibility } from './lib/compatibility'
+import type { CompatibilityReport } from './lib/compatibility'
 
 type Page = 'library' | 'recent' | 'favorites' | 'states'
 type Modal = 'settings' | 'controls' | 'help' | 'states' | null
@@ -160,6 +162,8 @@ export default function App() {
   const [importLabel, setImportLabel] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [progress, setProgress] = useState('正在准备模拟器…')
+  const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null)
+  const [compatibilityOpen, setCompatibilityOpen] = useState(false)
   const [fps, setFps] = useState(0)
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
   const [states, setStates] = useState<SaveState[]>([])
@@ -205,6 +209,20 @@ export default function App() {
     },
     [notify],
   )
+
+  useEffect(() => {
+    let cancelled = false
+    void probeCompatibility()
+      .then((report) => {
+        if (!cancelled) setCompatibility(report)
+      })
+      .catch(() => {
+        if (!cancelled) notify('环境检查暂时无法完成，请刷新后重试', true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [notify])
 
   useEffect(() => {
     let cancelled = false
@@ -930,6 +948,27 @@ export default function App() {
             <strong>{pages[page]}</strong>
           </div>
           <div className="topbar-right">
+            <button
+              className={`environment-button ${compatibility ? (compatibility.ready ? 'ready' : 'warning') : 'pending'}`}
+              onClick={() => setCompatibilityOpen((open) => !open)}
+              aria-expanded={compatibilityOpen}
+              aria-controls="compatibility-panel"
+              aria-label="环境检查"
+              title="环境检查"
+              disabled={!compatibility}
+            >
+              {compatibility ? (
+                compatibility.ready ? (
+                  <ShieldCheck size={16} />
+                ) : (
+                  <CloudOff size={16} />
+                )
+              ) : (
+                <LoaderCircle className="spin" size={16} />
+              )}
+              <span>{compatibility ? '环境检查' : '检查环境…'}</span>
+            </button>
+            <span className="topbar-divider" />
             <span className={`connection ${gamepad ? 'connected' : ''}`}>
               <Gamepad2 size={16} />
               {gamepad ? '手柄已连接' : '键盘已就绪'}
@@ -941,6 +980,51 @@ export default function App() {
             </button>
           </div>
         </header>
+        {compatibilityOpen && compatibility && (
+          <section
+            className="compatibility-panel"
+            id="compatibility-panel"
+            aria-label="运行环境检查"
+          >
+            <div className="compatibility-heading">
+              <div>
+                <strong>运行环境检查</strong>
+                <p>
+                  {compatibility.ready
+                    ? '模拟器运行所需能力已就绪。'
+                    : '有能力未满足，可能导致核心无法启动。'}
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="关闭环境检查"
+                onClick={() => setCompatibilityOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="compatibility-grid">
+              {compatibility.checks.map((check) => (
+                <div className={`compatibility-check ${check.status}`} key={check.id}>
+                  <span className="compatibility-mark" aria-hidden="true">
+                    {check.status === 'ok' ? (
+                      <Check size={14} />
+                    ) : check.status === 'warning' ? (
+                      '!'
+                    ) : (
+                      <X size={14} />
+                    )}
+                  </span>
+                  <div>
+                    <strong>{check.label}</strong>
+                    <span>{check.detail}</span>
+                    {check.action && <small>{check.action}</small>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         <main>
           <div className="page-heading">
             <div>
