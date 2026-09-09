@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { verifyStartup } from './test-core-startup.mjs'
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const browser = await chromium.launch({
@@ -20,10 +21,19 @@ try {
   await page.goto(`${url}/src/emulator/verify.html`)
   await page.waitForFunction(() => !!window.emulator)
   assert.equal(await page.evaluate(() => crossOriginIsolated), true, 'COOP/COEP must enable threads')
-  await page.evaluate(async () => {
+  const firstFrame = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch('/demo/star-orbit.gba')).arrayBuffer())
     await window.emulator.loadRom(bytes, 'star-orbit.gba')
+    // No FPS wait or arbitrary startup delay: the adapter's load promise must
+    // make an immediate pause, state capture and SRAM export safe.
+    window.emulator.pause()
+    const state = await window.emulator.saveState()
+    const battery = await window.emulator.exportSave()
+    window.emulator.resume()
+    return { stateSize: state.length, battery: battery ? Array.from(battery.slice(0, 5)) : null }
   })
+  assert.ok(firstFrame.stateSize > 1000, 'loadRom must support an immediate state capture')
+  assert.deepEqual(firstFrame.battery, [83, 79, 1, 0, 255], 'loadRom must execute ROM initialization before resolving')
   assert.equal(await page.evaluate(() => window.emulator.status), 'running')
   await page.waitForFunction(() => window.fps > 25, undefined, { timeout: 10000 })
   const normalFps = await page.evaluate(() => window.fps)
@@ -144,8 +154,9 @@ try {
   assert.deepEqual(audioGuard, { staleCallbackIgnored: true, oldHandlerRemoved: true })
   for (let attempt = 0; attempt < 20 && page.workers().length; attempt++) await page.waitForTimeout(50)
   assert.equal(page.workers().length, 0, 'audio regression core must also release all workers')
+  const startup = await verifyStartup(browser, url)
   assert.deepEqual(errors, [], 'no browser runtime errors')
-  console.log(JSON.stringify({ passed: true, normalFps, fastFps, stateSize, start, moved, restored, beforeRewind, rewound, saveData, audioGuard, workersAfterDispose: page.workers().length }, null, 2))
+  console.log(JSON.stringify({ passed: true, firstFrame, startup, normalFps, fastFps, stateSize, start, moved, restored, beforeRewind, rewound, saveData, audioGuard, workersAfterDispose: page.workers().length }, null, 2))
 } catch (error) {
   const artifacts = new URL('../.artifacts/', import.meta.url)
   await mkdir(artifacts, { recursive: true })

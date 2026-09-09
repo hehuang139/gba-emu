@@ -14,6 +14,7 @@ export interface CompatibilityReport {
 }
 
 type ProbeEnvironment = {
+  isSecureContext?: boolean
   crossOriginIsolated?: boolean
   SharedArrayBuffer?: unknown
   WebAssembly?: unknown
@@ -243,24 +244,27 @@ async function probeStorageQuota(
   }
 }
 
-export async function probeCompatibility(
+/** Synchronous core prerequisites shared by startup and the diagnostics panel. */
+export function checkRuntimePrerequisites(
   environment: ProbeEnvironment = globalThis as unknown as ProbeEnvironment,
-  options: { timeoutMs?: number } = {},
-): Promise<CompatibilityReport> {
-  const timeoutMs =
-    typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
-      ? Math.max(1, options.timeoutMs)
-      : 2000
+): CompatibilityReport {
   const checks: CapabilityCheck[] = []
+  const secure = safely(() => environment.isSecureContext === true, false)
   const isolated = safely(() => environment.crossOriginIsolated === true, false)
   checks.push({
     id: 'isolation',
     label: '跨源隔离',
-    status: isolated ? 'ok' : 'error',
-    detail: isolated ? 'COOP / COEP 已启用' : 'SharedArrayBuffer 线程无法启动',
-    action: isolated
-      ? undefined
-      : '请使用 HTTPS 或 localhost，并配置 COOP: same-origin 与 COEP: require-corp 后刷新页面。',
+    status: secure && isolated ? 'ok' : 'error',
+    detail: !secure
+      ? '当前页面不是安全上下文，模拟核心无法启动'
+      : isolated
+        ? '安全上下文与 COOP / COEP 已启用'
+        : '当前页面未启用跨源隔离，线程无法启动',
+    action: !secure
+      ? '请通过 HTTPS 或本机 localhost 访问；手机访问局域网 HTTP 地址不属于安全上下文。'
+      : isolated
+        ? undefined
+        : '请配置 COOP: same-origin 与 COEP: require-corp 响应头后刷新页面。',
   })
 
   const sab = safely(() => hasFunction(environment.SharedArrayBuffer), false)
@@ -288,8 +292,9 @@ export async function probeCompatibility(
   let context: WebGLRenderingContext | null = null
   try {
     const canvas = environment.document?.createElement?.('canvas')
-    context = (canvas?.getContext?.('webgl2') ||
-      canvas?.getContext?.('webgl')) as WebGLRenderingContext | null
+    // The bundled mGBA build requests a WebGL 2 context; WebGL 1 alone
+    // cannot satisfy its renderer, even if the browser exposes that API.
+    context = canvas?.getContext?.('webgl2') as WebGLRenderingContext | null
     webgl = Boolean(context)
   } catch {
     webgl = false
@@ -303,10 +308,22 @@ export async function probeCompatibility(
     id: 'webgl',
     label: 'WebGL',
     status: webgl ? 'ok' : 'error',
-    detail: webgl ? '可以显示游戏画面' : '无法创建 WebGL 上下文',
-    action: webgl ? undefined : '请启用硬件加速，或更新显卡驱动与浏览器。',
+    detail: webgl ? 'WebGL 2 可以显示游戏画面' : '无法创建模拟核心需要的 WebGL 2 上下文',
+    action: webgl ? undefined : '请启用硬件加速，或更新显卡驱动并使用支持 WebGL 2 的浏览器。',
   })
 
+  return { checks, ready: checks.every((check) => check.status !== 'error') }
+}
+
+export async function probeCompatibility(
+  environment: ProbeEnvironment = globalThis as unknown as ProbeEnvironment,
+  options: { timeoutMs?: number } = {},
+): Promise<CompatibilityReport> {
+  const timeoutMs =
+    typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+      ? Math.max(1, options.timeoutMs)
+      : 2000
+  const { checks } = checkRuntimePrerequisites(environment)
   checks.push(
     ...(await Promise.all([
       probeIndexedDB(environment, timeoutMs),

@@ -46,7 +46,12 @@ import type { EmulatorStatus, GbaButton, GbaEmulator } from './emulator'
 import * as db from './lib/storage'
 import { extractRomFiles } from './lib/import-roms'
 import type { Game, SaveState } from './lib/types'
-import { defaultBindings, keyLabel, readSettings } from './lib/preferences'
+import { defaultBindings, isBindingCode, keyLabel, readSettings } from './lib/preferences'
+import { createInputController } from './lib/input'
+import { useGamepads } from './hooks/useGamepads'
+import { GamepadSettings } from './components/GamepadSettings'
+import { TouchControls } from './components/TouchControls'
+import { TouchSettings } from './components/TouchSettings'
 import type { Settings } from './lib/preferences'
 import { probeCompatibility } from './lib/compatibility'
 import type { CompatibilityReport } from './lib/compatibility'
@@ -169,7 +174,7 @@ export default function App() {
   const [states, setStates] = useState<SaveState[]>([])
   const [allStates, setAllStates] = useState<SaveState[]>([])
   const [mapping, setMapping] = useState<GbaButton | null>(null)
-  const [gamepad, setGamepad] = useState(false)
+  const [launchError, setLaunchError] = useState('')
   const [dragging, setDragging] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [gameMenu, setGameMenu] = useState<string | null>(null)
@@ -184,6 +189,30 @@ export default function App() {
   const saveInputRef = useRef<HTMLInputElement>(null)
   const stateInputRef = useRef<HTMLInputElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
+  const mappingRef = useRef(mapping)
+  mappingRef.current = mapping
+  const launchTrigger = useRef<HTMLElement | null>(null)
+  const input = useMemo(
+    () =>
+      createInputController(
+        (button) => engineRef.current?.keyDown(button),
+        (button) => engineRef.current?.keyUp(button),
+      ),
+    [],
+  )
+  const releaseInputs = useCallback(() => {
+    input.clear()
+    engineRef.current?.releaseAllKeys()
+    engineRef.current?.setRewind(false)
+    engineRef.current?.setSpeed(settingsRef.current.speed)
+  }, [input])
+  const inputEnabled = Boolean(active && status === 'running' && !busy && !modal && !deleteTarget)
+  const gamepads = useGamepads({
+    enabled: inputEnabled,
+    onPress: (button) => input.press('gamepad', button),
+    onRelease: (button) => input.release('gamepad', button),
+  })
+  const gamepad = gamepads.connected
   const dragCount = useRef(0)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -254,7 +283,10 @@ export default function App() {
       onStatus: setStatus,
       onFps: setFps,
       onProgress: setProgress,
-      onError: (error) => notify(error.message, true),
+      onError: (error) => {
+        setLaunchError(error.message)
+        notify(error.message, true)
+      },
       onSaveChange: (bytes) => {
         const game = activeRef.current
         if (game)
@@ -343,14 +375,17 @@ export default function App() {
 
   useEffect(() => {
     const release = () => {
-      engineRef.current?.releaseAllKeys()
-      engineRef.current?.setSpeed(settingsRef.current.speed)
+      releaseInputs()
     }
     const visibility = () => {
       if (document.hidden) {
         release()
         if (engineRef.current?.status === 'running') {
-          engineRef.current.pause()
+          try {
+            engineRef.current.pause()
+          } catch (error) {
+            notify(error instanceof Error ? error.message : '暂停时保存失败，请导出备份', true)
+          }
           if (settingsRef.current.autoSave && !operationRef.current)
             void run(() => snapshot(0, true))
         }
@@ -362,7 +397,11 @@ export default function App() {
       window.removeEventListener('blur', release)
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [run, snapshot])
+  }, [run, snapshot, releaseInputs, notify])
+
+  useEffect(() => {
+    if (!inputEnabled) releaseInputs()
+  }, [inputEnabled, releaseInputs])
 
   useEffect(() => {
     if (page === 'states')
@@ -373,25 +412,29 @@ export default function App() {
 
   useEffect(() => {
     if (!modal && !deleteTarget) return
-    engineRef.current?.releaseAllKeys()
+    releaseInputs()
     const previous = document.activeElement as HTMLElement | null
     const first = modalRef.current?.querySelector<HTMLElement>('button, input, select')
     first?.focus()
     const trap = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !mapping) {
+      if (event.key === 'Escape' && !mappingRef.current && !event.defaultPrevented) {
         setModal(null)
         setDeleteTarget(null)
       }
       if (event.key !== 'Tab') return
       const elements = Array.from(
         modalRef.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input:not(:disabled), select, [tabindex="0"]',
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]',
         ) || [],
-      )
+      ).filter((element) => element.getClientRects().length > 0)
       if (!elements.length) return
       const first = elements[0],
         last = elements[elements.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      if (
+        event.shiftKey &&
+        (document.activeElement === first ||
+          !elements.includes(document.activeElement as HTMLElement))
+      ) {
         event.preventDefault()
         last.focus()
       }
@@ -403,15 +446,17 @@ export default function App() {
     document.addEventListener('keydown', trap)
     return () => {
       document.removeEventListener('keydown', trap)
-      previous?.focus()
+      if (previous?.isConnected) previous.focus()
     }
-  }, [modal, deleteTarget, mapping])
+  }, [modal, deleteTarget, releaseInputs])
 
   const playGame = useCallback(
     (game: Game, requestedState?: SaveState) =>
       run(async () => {
         const engine = engineRef.current
         if (!engine) throw new Error('模拟器尚未就绪')
+        if (!activeRef.current) launchTrigger.current = document.activeElement as HTMLElement
+        releaseInputs()
         if (activeRef.current && ['running', 'paused'].includes(engine.status)) {
           engine.pause()
           if (settingsRef.current.autoSave) await snapshot(0, true)
@@ -429,6 +474,7 @@ export default function App() {
         setPage('library')
         setModal(null)
         setProgress('正在启动 mGBA 内核…')
+        setLaunchError('')
         await engine.loadRom(bytes, game.filename)
         if (battery) await engine.importSave(battery)
         engine.setVolume(settingsRef.current.volume)
@@ -447,7 +493,7 @@ export default function App() {
         canvasRef.current?.focus({ preventScroll: true })
         stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }),
-    [run, snapshot, notify, refresh],
+    [run, snapshot, notify, refresh, releaseInputs],
   )
 
   const closeGame = () =>
@@ -466,6 +512,11 @@ export default function App() {
       setActive(null)
       setStates([])
       await refresh()
+      requestAnimationFrame(() => {
+        const trigger = launchTrigger.current
+        if (trigger?.isConnected && trigger.getClientRects().length) trigger.focus()
+        else document.querySelector<HTMLButtonElement>('.hero-actions button, .import-top')?.focus()
+      })
       notify('已返回游戏库')
     })
 
@@ -481,8 +532,12 @@ export default function App() {
   const togglePause = () => {
     const engine = engineRef.current
     if (!engine || !activeRef.current || operationRef.current) return
-    if (engine.status === 'running') engine.pause()
-    else if (engine.status === 'paused') engine.resume()
+    try {
+      if (engine.status === 'running') engine.pause()
+      else if (engine.status === 'paused') engine.resume()
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '暂停或继续失败，请重试', true)
+    }
     canvasRef.current?.focus({ preventScroll: true })
   }
   const screenshot = () =>
@@ -508,8 +563,8 @@ export default function App() {
           setMapping(null)
           return
         }
-        if (['Space', 'Tab', 'F5', 'F8', 'F11', 'Backspace'].includes(event.code)) {
-          notify('这个按键用于模拟器快捷操作，请选择其他按键')
+        if (!isBindingCode(event.code)) {
+          notify('请选择字母、数字、方向键或其他可用按键；快捷操作键保留给模拟器')
           return
         }
         const existing = Object.entries(settings.bindings).find(
@@ -540,8 +595,10 @@ export default function App() {
       // keeps normal Tab navigation and Enter/Space button activation.
       if (document.activeElement !== canvasRef.current) return
       if (event.code === 'Escape') {
-        engineRef.current?.releaseAllKeys()
-        canvasRef.current?.blur()
+        releaseInputs()
+        stageRef.current
+          ?.querySelector<HTMLButtonElement>('.player-toolbar button:not(:disabled)')
+          ?.focus()
         return
       }
       if (event.code === 'Tab' && event.shiftKey) return
@@ -550,7 +607,7 @@ export default function App() {
       )?.[0]
       if (button) {
         event.preventDefault()
-        if (!event.repeat) engineRef.current?.keyDown(button)
+        if (!event.repeat && inputEnabled) input.press('keyboard', button)
         return
       }
       if (['Space', 'F5', 'F8', 'Tab', 'F11', 'Backspace'].includes(event.code))
@@ -567,7 +624,7 @@ export default function App() {
       const button = (Object.entries(settings.bindings) as [GbaButton, string][]).find(
         ([, code]) => code === event.code,
       )?.[0]
-      if (button) engineRef.current?.keyUp(button)
+      if (button) input.release('keyboard', button)
       if (event.code === 'Tab') engineRef.current?.setSpeed(settings.speed)
       if (event.code === 'Backspace') engineRef.current?.setRewind(false)
     }
@@ -578,55 +635,6 @@ export default function App() {
       window.removeEventListener('keyup', keyup)
     }
   })
-
-  useEffect(() => {
-    let frame = 0,
-      previous = new Set<GbaButton>()
-    const poll = () => {
-      const pads = navigator.getGamepads?.() || []
-      const pad = Array.from(pads).find((p) => p?.connected && p.mapping === 'standard')
-      setGamepad(Boolean(pad))
-      const next = new Set<GbaButton>()
-      if (
-        pad &&
-        activeRef.current &&
-        engineRef.current?.status === 'running' &&
-        !document.hidden &&
-        document.hasFocus() &&
-        !modal &&
-        !deleteTarget
-      ) {
-        const mapping: [number, GbaButton][] = [
-          [0, 'A'],
-          [1, 'B'],
-          [4, 'L'],
-          [5, 'R'],
-          [8, 'Select'],
-          [9, 'Start'],
-          [12, 'Up'],
-          [13, 'Down'],
-          [14, 'Left'],
-          [15, 'Right'],
-        ]
-        mapping.forEach(([index, key]) => {
-          if (pad.buttons[index]?.pressed) next.add(key)
-        })
-        if (pad.axes[0] < -0.45) next.add('Left')
-        if (pad.axes[0] > 0.45) next.add('Right')
-        if (pad.axes[1] < -0.45) next.add('Up')
-        if (pad.axes[1] > 0.45) next.add('Down')
-      }
-      for (const key of next) if (!previous.has(key)) engineRef.current?.keyDown(key)
-      for (const key of previous) if (!next.has(key)) engineRef.current?.keyUp(key)
-      previous = next
-      frame = requestAnimationFrame(poll)
-    }
-    frame = requestAnimationFrame(poll)
-    return () => {
-      cancelAnimationFrame(frame)
-      previous.forEach((key) => engineRef.current?.keyUp(key))
-    }
-  }, [modal, deleteTarget])
 
   const importFiles = (files: File[]) =>
     run(async () => {
@@ -754,30 +762,6 @@ export default function App() {
     setSearch('')
     setSidebarOpen(false)
   }
-  const touchButton = (key: GbaButton, className = '') => (
-    <button
-      className={`touch-key ${className}`}
-      aria-label={buttonNames[key]}
-      onPointerDown={(event) => {
-        event.preventDefault()
-        event.currentTarget.setPointerCapture(event.pointerId)
-        engineRef.current?.keyDown(key)
-      }}
-      onPointerUp={() => engineRef.current?.keyUp(key)}
-      onPointerCancel={() => engineRef.current?.keyUp(key)}
-      onLostPointerCapture={() => engineRef.current?.keyUp(key)}
-    >
-      {key === 'Up'
-        ? '↑'
-        : key === 'Down'
-          ? '↓'
-          : key === 'Left'
-            ? '←'
-            : key === 'Right'
-              ? '→'
-              : key}
-    </button>
-  )
 
   return (
     <div
@@ -836,7 +820,10 @@ export default function App() {
         }}
       />
       {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside
+        className={`sidebar ${sidebarOpen ? 'open' : ''}`}
+        inert={Boolean(modal || deleteTarget)}
+      >
         <a
           href="#"
           className="brand"
@@ -933,7 +920,7 @@ export default function App() {
           </div>
         </div>
       </aside>
-      <div className="main-shell">
+      <div className="main-shell" inert={Boolean(modal || deleteTarget)}>
         <header className="topbar">
           <div className="breadcrumb">
             <IconButton
@@ -1076,9 +1063,15 @@ export default function App() {
                 height={160}
                 tabIndex={0}
                 aria-label="GBA 模拟器画面"
+                aria-describedby="player-keyboard-help"
+                onBlur={() => {
+                  input.clear('keyboard')
+                  engineRef.current?.setRewind(false)
+                  engineRef.current?.setSpeed(settingsRef.current.speed)
+                }}
               />
               {active && status === 'loading' && (
-                <div className="player-overlay loading-overlay">
+                <div className="player-overlay loading-overlay" role="status">
                   <LoaderCircle className="spin" size={28} />
                   <span>{progress}</span>
                 </div>
@@ -1093,10 +1086,10 @@ export default function App() {
                 </button>
               )}
               {active && status === 'error' && (
-                <div className="player-overlay">
+                <div className="player-overlay" role="alert">
                   <CircleHelp size={28} />
                   <strong>游戏启动失败</strong>
-                  <span>请检查游戏文件，或重新尝试</span>
+                  <span>{launchError || '请检查游戏文件，或重新尝试'}</span>
                   <button className="button primary" onClick={() => void playGame(active)}>
                     重新启动
                   </button>
@@ -1173,28 +1166,16 @@ export default function App() {
                 </IconButton>
               </div>
             </div>
-            <div className={`touch-controls ${settings.touch ? 'force-touch' : ''}`}>
-              <div className="touch-shoulders">
-                {touchButton('L')}
-                {touchButton('R')}
-              </div>
-              <div className="touch-main">
-                <div className="touch-dpad">
-                  {touchButton('Up', 'up')}
-                  {touchButton('Left', 'left')}
-                  {touchButton('Right', 'right')}
-                  {touchButton('Down', 'down')}
-                </div>
-                <div className="touch-system">
-                  {touchButton('Select')}
-                  {touchButton('Start')}
-                </div>
-                <div className="touch-ab">
-                  {touchButton('B')}
-                  {touchButton('A')}
-                </div>
-              </div>
-            </div>
+            <p id="player-keyboard-help" className="sr-only">
+              聚焦画面后使用游戏按键；按 Escape 移至播放工具栏，或按 Shift+Tab 离开画面。
+            </p>
+            <TouchControls
+              config={settings.touchConfig}
+              visible={settings.touch}
+              enabled={inputEnabled}
+              onPress={(button) => input.press('touch', button)}
+              onRelease={(button) => input.release('touch', button)}
+            />
           </section>
 
           {!active && page === 'library' && (
@@ -1745,16 +1726,16 @@ export default function App() {
               <>
                 <p className="modal-description">
                   点击按键可重新映射。点击游戏画面后使用键盘，按 Esc
-                  离开画面焦点。标准手柄按任意按钮即可识别。
+                  离开画面焦点。连接手柄后按任意按钮，可设置按钮或摇杆映射。
                 </p>
                 <div className={`controller-status ${gamepad ? 'connected' : ''}`}>
                   <Gamepad2 size={21} />
                   <div>
-                    <strong>{gamepad ? '手柄已连接，可以开始游戏' : '键盘已就绪'}</strong>
+                    <strong>{gamepad ? '手柄已连接' : '键盘已就绪'}</strong>
                     <p>
                       {gamepad
-                        ? '左摇杆 / 十字键移动 · A / B 操作 · 肩键 L / R'
-                        : '支持 Xbox、PlayStation 等标准映射手柄'}
+                        ? '在下方确认或设置当前设备的按键与摇杆映射'
+                        : '支持标准手柄，也可为非标准设备设置映射'}
                     </p>
                     <span className="status-dot" />
                   </div>
@@ -1765,6 +1746,7 @@ export default function App() {
                       <span>{buttonNames[key]}</span>
                       <button
                         className={mapping === key ? 'listening' : ''}
+                        aria-label={`${buttonNames[key]}键盘映射：${mapping === key ? '按下新按键' : keyLabel(settings.bindings[key])}`}
                         onClick={() => setMapping(key)}
                       >
                         {mapping === key ? '按下新按键…' : keyLabel(settings.bindings[key])}
@@ -1772,6 +1754,14 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                <p className="sr-only" role="status">
+                  {mapping ? `正在设置${buttonNames[mapping]}，按 Escape 取消` : ''}
+                </p>
+                <GamepadSettings controller={gamepads} />
+                <TouchSettings
+                  config={settings.touchConfig}
+                  onChange={(value) => setSetting('touchConfig', value)}
+                />
                 <div className="modal-setting">
                   <div>
                     <strong>显示触屏按键</strong>

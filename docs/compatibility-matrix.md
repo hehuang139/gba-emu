@@ -13,19 +13,29 @@ Advance 的 mGBA 线程核心要求页面启用跨源隔离，并依赖 SharedAr
 1. 清理一个独立测试配置中的站点数据，打开应用并记录「环境检查」的六项结果。
 2. 导入仓库内的 `public/demo/star-orbit.gba`，启动、暂停、恢复并运行至少两分钟。
 3. 导出并重新导入 `.sav`，刷新页面后确认游戏和存档仍可读取。
-4. 在移动设备上重复触控流程；横屏与竖屏各记录一次布局是否可操作。
-5. 失败时保留浏览器版本、部署响应头、控制台错误和最小复现步骤，不上传商业 ROM 或个人存档。
+4. 在实体手柄上验证默认 / 自定义按钮和轴方向、死区、取消 / 重置、刷新 / 重连，并检查按住输入时失焦或断开后能否正确释放。记录浏览器提供的设备标识与是否属于标准布局。
+5. 在移动设备上分别验证标准 / 紧凑触屏布局、大小 / 不透明度、多指和取消事件；横屏与竖屏各记录一次布局、安全区与操作结果。
+6. 用键盘完成导入、启动、暂停、存取档与退出；检查对话框焦点进入 / 限制 / 恢复，再用屏幕阅读器人工检查名称、状态播报和操作顺序。自动化可访问名称检查不能代替这一人工步骤。
+7. 在真实低性能设备上持续运行原创试玩，分别记录正常游玩与倒带的帧率、音频中断和内存观测方法；CPU 限速与软件 GPU 结果单独标识。
+8. 失败时保留浏览器版本、部署响应头、控制台错误和最小复现步骤，不上传商业 ROM 或个人存档。
 
 ## 当前结论
 
 | 日期 | 浏览器 / 系统 | 环境与测试方式 | 验证结果 | 未验证范围 |
 | --- | --- | --- | --- | --- |
 | 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | Vite localhost，COOP / COEP；Playwright headless，1440×1024 与 390×844 视口，启用 SwiftShader | 环境检查六项、试玩启动、键盘、存取档、刷新恢复、ZIP 导入、倒带与 worker 释放通过 | SwiftShader 不能代表真实 GPU 性能；手机视口不能代表 Android / iOS；音频测试只验证程序状态，未人工试听 |
+| 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | Vite localhost，COOP / COEP；真实 UI 与 mGBA 适配器，模拟 Gamepad API；1440×1100、390×844 视口 | 标准 / 非标准映射、按钮 / 轴录入、死区、取消 / 重置、刷新 / 插槽变化持久化、断连 / 失焦、共享按键、存储失败和 SecurityError 回归通过 | 未连接实体手柄；不能确认具体型号、驱动或真实轴噪声表现 |
+| 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | Vite localhost，COOP / COEP；合成指针与 320×740、390×844、844×390 视口 | 触屏配置持久化、多指与同键共享、取消 / 捕获丢失、失焦、弹窗 / 暂停 / 方向切换释放、标准 / 紧凑布局及无横向溢出回归通过 | 非实体手机；实际刘海 / 手势安全区、触摸硬件、音频和移动性能未验证 |
 | 待验证 | Firefox | 待填写版本和设备 | 未验证 | 完整流程 |
+| 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | 生产构建 Vite preview localhost；COOP: same-origin / COEP: require-corp；Playwright headless | `test:keyboard` 纯键盘导入、启动、暂停、存取档、退出及焦点回归通过；`test:startup` 缺失真实隔离头、注入非安全上下文 / WebGL2 故障、配额写入失败后已有存档保持不变 | 非安全上下文和硬件失败是注入场景；屏幕阅读器播报仍需人工验证 |
 | 待验证 | Safari / macOS | 待填写版本和设备 | 未验证 | 完整流程 |
 | 待验证 | Chrome / Android | 需要真实手机 | 未验证 | 触控、多点输入、音频、性能 |
 | 待验证 | Safari / iOS | 需要真实 iPhone / iPad | 未验证 | 触控、安全区、音频、性能 |
+| 待验证 | 低性能设备 | 需要记录真实硬件、浏览器与内存观测方式 | 未验证 | 持续游玩、倒带帧率、音频中断与内存 |
+| 待验证 | 屏幕阅读器 / 辅助技术 | 需要记录浏览器、阅读器版本与输入方式 | 未验证 | 控件名称、动态状态播报、键盘操作顺序 |
 
-复现上述 Edge 记录：先运行 `pnpm dev`，另一个 PowerShell 终端设置 `$env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'`，再运行 `pnpm test:engine`、`pnpm test:ui`、`pnpm test:zip` 和 `pnpm test:saves`。UI 检查生成环境面板的桌面和手机尺寸截图。
+复现 Edge 自动化：先运行 `pnpm dev`，另一个 PowerShell 终端设置 `$env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'`。原流程使用 `pnpm test:engine`、`pnpm test:ui`、`pnpm test:zip` 和 `pnpm test:saves`；本轮新增 `pnpm test:keyboard`、`pnpm test:gamepad`、`pnpm test:touch` 和 `pnpm test:startup`。测试截图和触屏视口记录写入 `.artifacts/`。记录结果时注明执行的具体套件与最终结果，不能将脚本存在视为测试通过。
+
+启动与存档回归还覆盖当前游戏首帧完成前禁止读取、启动超时、加载中释放，以及立即暂停后读取当前 SRAM。电池存档通过核心生成的原生快照获取，配套单元测试校验快照结构与解压边界；本轮没有升级核心。这些回归证明对应路径的行为，不增加其他浏览器或实体设备的支持结论。
 
 未记录的环境不视为已支持。应用要求 HTTPS 或 localhost，以及 `Cross-Origin-Opener-Policy: same-origin` 和 `Cross-Origin-Embedder-Policy: require-corp`；普通 HTTP 局域网地址无法启动线程核心。不同浏览器、驱动和部署仍需独立实测。

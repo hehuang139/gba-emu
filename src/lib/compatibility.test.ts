@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { IDBFactory } from 'fake-indexeddb'
-import { probeCompatibility } from './compatibility.ts'
+import { checkRuntimePrerequisites, probeCompatibility } from './compatibility.ts'
 
 const healthy = () => ({
+  isSecureContext: true,
   crossOriginIsolated: true,
   SharedArrayBuffer: class SharedArrayBuffer {},
   WebAssembly: { instantiate: async () => ({}) },
@@ -211,6 +212,7 @@ test('throwing browser capability getters become diagnostic failures', async () 
     {},
     Object.fromEntries(
       [
+        'isSecureContext',
         'crossOriginIsolated',
         'SharedArrayBuffer',
         'WebAssembly',
@@ -260,6 +262,7 @@ test('releases the temporary WebGL context after checking support', async () => 
 
 test('explains missing deployment prerequisites', async () => {
   const report = await probeCompatibility({
+    isSecureContext: true,
     crossOriginIsolated: false,
     document: { createElement: () => ({ getContext: () => null }) },
   })
@@ -267,4 +270,72 @@ test('explains missing deployment prerequisites', async () => {
   assert.equal(report.checks.find((check) => check.id === 'isolation')?.status, 'error')
   assert.match(report.checks.find((check) => check.id === 'isolation')?.action || '', /COOP/)
   assert.equal(report.checks.find((check) => check.id === 'storageQuota')?.status, 'warning')
+})
+
+test('startup prerequisites distinguish insecure LAN access from missing isolation headers', () => {
+  const insecure = checkRuntimePrerequisites({
+    ...healthy(),
+    isSecureContext: false,
+    crossOriginIsolated: false,
+  })
+  const missingHeaders = checkRuntimePrerequisites({ ...healthy(), crossOriginIsolated: false })
+  assert.equal(insecure.ready, false)
+  assert.match(insecure.checks[0].detail, /不是安全上下文/)
+  assert.match(insecure.checks[0].action || '', /手机.*HTTP/)
+  assert.match(missingHeaders.checks[0].detail, /未启用跨源隔离/)
+  assert.match(missingHeaders.checks[0].action || '', /COOP/)
+})
+
+test('startup checks are synchronous and never access storage permissions', () => {
+  const environment = Object.defineProperties(healthy(), {
+    indexedDB: {
+      get() {
+        throw new Error('startup must not probe IndexedDB')
+      },
+    },
+    navigator: {
+      get() {
+        throw new Error('startup must not estimate storage')
+      },
+    },
+  })
+  const report = checkRuntimePrerequisites(environment)
+  assert.equal(report.ready, true)
+  assert.deepEqual(
+    report.checks.map((check) => check.id),
+    ['isolation', 'sharedArrayBuffer', 'wasm', 'webgl'],
+  )
+})
+
+test('startup identifies unavailable SharedArrayBuffer and WebAssembly separately', () => {
+  for (const [api, id] of [
+    ['SharedArrayBuffer', 'sharedArrayBuffer'],
+    ['WebAssembly', 'wasm'],
+  ] as const) {
+    const report = checkRuntimePrerequisites({ ...healthy(), [api]: undefined })
+    assert.equal(report.ready, false)
+    assert.deepEqual(
+      report.checks.filter((check) => check.status === 'error').map((check) => check.id),
+      [id],
+    )
+    assert.ok(report.checks.find((check) => check.id === id)?.action)
+  }
+})
+
+test('a WebGL 1 only browser fails the bundled core prerequisites', () => {
+  const requested: string[] = []
+  const report = checkRuntimePrerequisites({
+    ...healthy(),
+    document: {
+      createElement: () => ({
+        getContext: (kind: string) => {
+          requested.push(kind)
+          return kind === 'webgl' ? {} : null
+        },
+      }),
+    },
+  })
+  assert.equal(report.ready, false)
+  assert.deepEqual(requested, ['webgl2'])
+  assert.match(report.checks.find((check) => check.id === 'webgl')?.detail || '', /WebGL 2/)
 })

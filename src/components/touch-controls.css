@@ -1,0 +1,263 @@
+.touch-controls.advance-touch {
+  display: block;
+  container-type: inline-size;
+  padding: 12px max(12px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  min-width: 0;
+  flex-shrink: 0;
+  background: #1b281b;
+  border-top: 1px solid #34482e;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touch-controls.advance-touch[hidden] {
+  display: none;
+}
+
+.advance-touch-layout {
+  --tc-key: max(44px, min(calc(48px * var(--tc-scale)), calc((100cqw - 24px) / 5)));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas: 'shoulders shoulders' 'dpad action' 'system system';
+  align-items: center;
+  gap: 10px 12px;
+  max-width: 620px;
+  margin-inline: auto;
+}
+
+.advance-touch-key {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  width: var(--tc-key);
+  height: var(--tc-key);
+  padding: 0;
+  border: 1px solid #69875a;
+  border-radius: 9px;
+  background: #344930;
+  color: #e0efcf;
+  box-shadow: 0 2px 0 #11220f;
+  font-size: 17px;
+  font-weight: 650;
+  opacity: var(--tc-opacity);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.advance-touch-key.is-pressed {
+  color: #fff;
+  background: #6e8e52;
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+.advance-touch-key:focus-visible {
+  outline: 3px solid #c8f3a7;
+  outline-offset: 3px;
+  opacity: 1;
+}
+
+.advance-touch-key:disabled {
+  opacity: 0.38;
+}
+
+.advance-touch-shoulders {
+  grid-area: shoulders;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.advance-touch-shoulders .advance-touch-key {
+  width: max(44px, calc(var(--tc-key) * 1.4));
+  border-radius: 12px 12px 6px 6px;
+  font-size: 14px;
+}
+
+.advance-touch-dpad {
+  grid-area: dpad;
+  display: grid;
+  grid-template-columns: repeat(3, var(--tc-key));
+  grid-template-rows: repeat(3, var(--tc-key));
+  justify-self: start;
+}
+
+.advance-touch-up {
+  grid-area: 1 / 2;
+}
+.advance-touch-left {
+  grid-area: 2 / 1;
+}
+.advance-touch-right {
+  grid-area: 2 / 3;
+}
+.advance-touch-down {
+  grid-area: 3 / 2;
+}
+
+.advance-touch-system {
+  grid-area: system;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.advance-touch-system .advance-touch-key {
+  width: max(44px, calc(var(--tc-key) * 1.15));
+  border-radius: 15px;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.advance-touch-action {
+  grid-area: action;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.advance-touch-action .advance-touch-key {
+  border-radius: 50%;
+}
+
+.advance-touch-action .advance-touch-key:last-child {
+  margin-bottom: calc(var(--tc-key) * 0.6);
+}
+
+.advance-touch[data-layout='compact'] .advance-touch-layout {
+  grid-template-areas: 'shoulders system' 'dpad action';
+  row-gap: 6px;
+}
+
+.advance-touch[data-layout='compact'] .advance-touch-shoulders {
+  justify-content: flex-start;
+}
+
+.advance-touch[data-layout='compact'] .advance-touch-shoulders .advance-touch-key {
+  width: var(--tc-key);
+}
+
+.advance-touch[data-layout='compact'] .advance-touch-system {
+  justify-content: flex-end;
+}
+
+.advance-touch[data-layout='compact'] .advance-touch-system .advance-touch-key {
+  width: var(--tc-key);
+}
+
+.advance-touch-settings {
+  min-width: 0;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #435638;
+  border-radius: 10px;
+}
+
+.advance-touch-settings legend {
+  padding: 0 7px;
+  color: #d2e6ba;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.advance-touch-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 15px;
+  color: #c7d7b8;
+  font-size: 12px;
+}
+
+.advance-touch-setting label {
+  line-height: 1.5;
+}
+
+.advance-touch-setting output {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  color: #a8ca89;
+}
+
+.advance-touch-setting select {
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 9px;
+  background: #2e4224;
+  color: #c7d7b8;
+  border: 1px solid #4b6538;
+  border-radius: 6px;
+}
+
+.advance-touch-setting input {
+  width: 130px;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 0;
+  accent-color: #a7cf84;
+}
+
+.advance-touch-hint {
+  margin: 0 0 14px;
+  color: #9db28a;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.advance-touch-reset {
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid #526c3f;
+  border-radius: 6px;
+  background: #2e4224;
+  color: #d2e6ba;
+  font-size: 11px;
+}
+
+@media (orientation: landscape) and (max-height: 600px) {
+  .touch-controls.advance-touch {
+    padding-top: 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .advance-touch-layout {
+    --tc-key: max(44px, min(calc(48px * var(--tc-scale)), calc((100cqw - 40px) / 7.3)));
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas: 'shoulders shoulders shoulders' 'dpad system action';
+    row-gap: 6px;
+  }
+
+  .advance-touch[data-layout='compact'] .advance-touch-layout {
+    grid-template-areas: 'shoulders shoulders shoulders' 'dpad system action';
+  }
+
+  .advance-touch[data-layout='compact'] .advance-touch-shoulders {
+    justify-content: space-between;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 540px) {
+  .advance-touch-layout,
+  .advance-touch[data-layout='compact'] .advance-touch-layout {
+    --tc-key: max(44px, min(calc(48px * var(--tc-scale)), calc((100cqw - 24px) / 5)));
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: 'shoulders system' 'dpad action';
+  }
+
+  .advance-touch-shoulders .advance-touch-key {
+    width: var(--tc-key);
+  }
+
+  .advance-touch-system .advance-touch-key {
+    width: var(--tc-key);
+  }
+}
