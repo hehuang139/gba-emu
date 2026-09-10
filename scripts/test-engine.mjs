@@ -116,6 +116,62 @@ try {
     assert.equal(await page.evaluate(() => window.emulator.status), 'paused', 'import preserves pause state')
   }
 
+  // Exercise the public APIs while the native CPU is running. The normal ship
+  // assertions above deliberately capture paused frames, which missed races
+  // between synchronous native state access and framebuffer/audio callbacks.
+  await page.evaluate(() => window.emulator.resume())
+  const runningSnapshots = []
+  for (let round = 0; round < 8; round++) {
+    console.log(`Engine: running save/screenshot/load/SRAM round ${round + 1}/8`)
+    const result = await page.evaluate(async () => {
+      const emulator = window.emulator
+      const statuses = [emulator.status]
+      const state = await emulator.saveState()
+      statuses.push(emulator.status)
+      const png = await emulator.screenshot()
+      statuses.push(emulator.status)
+      await emulator.loadState(state)
+      statuses.push(emulator.status)
+      const battery = await emulator.exportSave()
+      statuses.push(emulator.status)
+      const bitmap = await createImageBitmap(png)
+      const dimensions = [bitmap.width, bitmap.height]
+      bitmap.close()
+      return {
+        statuses, stateSize: state.length, screenshotSize: png.size, dimensions,
+        batterySize: battery?.length ?? 0,
+        batteryRecord: battery ? Array.from(battery.slice(0, 5)) : null,
+      }
+    })
+    assert.deepEqual(result.statuses, Array(5).fill('running'), 'native snapshots must preserve running status')
+    assert.ok(result.stateSize > 1000, 'running state capture must contain real CPU and memory data')
+    assert.ok(result.screenshotSize > 100, 'running screenshot must contain an encoded image')
+    assert.deepEqual(result.dimensions, [240, 160], 'running screenshot must decode as a full GBA frame')
+    assert.ok(result.batterySize >= 512, 'running SRAM export must contain cartridge save memory')
+    assert.deepEqual(result.batteryRecord.slice(0, 3), [83, 79, 1], 'SRAM record must retain its Star Orbit signature')
+    assert.equal(result.batteryRecord[3] + result.batteryRecord[4], 255, 'SRAM score checksum must remain valid')
+    runningSnapshots.push(result)
+  }
+  await page.evaluate(() => { window.fps = 0 })
+  await page.waitForFunction(() => window.fps > 0, undefined, { timeout: 10000 })
+  const snapshotsResumedFps = await page.evaluate(() => window.fps)
+  const pausedSnapshot = await page.evaluate(async () => {
+    const emulator = window.emulator
+    emulator.pause()
+    const statuses = [emulator.status]
+    const state = await emulator.saveState()
+    statuses.push(emulator.status)
+    await emulator.screenshot()
+    statuses.push(emulator.status)
+    await emulator.loadState(state)
+    statuses.push(emulator.status)
+    await emulator.exportSave()
+    statuses.push(emulator.status)
+    return { statuses, stateSize: state.length }
+  })
+  assert.deepEqual(pausedSnapshot.statuses, Array(5).fill('paused'), 'native snapshots must never resume a paused game')
+  assert.ok(pausedSnapshot.stateSize > 1000)
+
   await page.evaluate(() => window.emulator.reset())
   assert.equal(await page.evaluate(() => window.emulator.status), 'paused')
   if (process.env.ENGINE_SCREENSHOT_PATH) await page.screenshot({ path: process.env.ENGINE_SCREENSHOT_PATH })
@@ -156,7 +212,8 @@ try {
   assert.equal(page.workers().length, 0, 'audio regression core must also release all workers')
   const startup = await verifyStartup(browser, url)
   assert.deepEqual(errors, [], 'no browser runtime errors')
-  console.log(JSON.stringify({ passed: true, firstFrame, startup, normalFps, fastFps, stateSize, start, moved, restored, beforeRewind, rewound, saveData, audioGuard, workersAfterDispose: page.workers().length }, null, 2))
+  const snapshots = { rounds: runningSnapshots.length, first: runningSnapshots[0], last: runningSnapshots.at(-1), resumedFps: snapshotsResumedFps, paused: pausedSnapshot }
+  console.log(JSON.stringify({ passed: true, firstFrame, startup, normalFps, fastFps, stateSize, start, moved, restored, beforeRewind, rewound, saveData, snapshots, audioGuard, workersAfterDispose: page.workers().length }, null, 2))
 } catch (error) {
   const artifacts = new URL('../.artifacts/', import.meta.url)
   await mkdir(artifacts, { recursive: true })

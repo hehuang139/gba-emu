@@ -110,6 +110,7 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
   let pendingBattery = false
   let coreError: Error | null = null
   let firstFrameEnded = false
+  let pausedCoreDepth = 0
 
   const setStatus = (next: EmulatorStatus) => {
     if (status === next || status === 'disposed') return
@@ -135,24 +136,43 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
     }
     return error
   }
+  const withPausedCore = <T>(instance: Core, action: () => T): T => {
+    // Framebuffer access is not locked by the native screenshot API. Keep all
+    // synchronous snapshot work on a paused CPU, including nested SRAM capture
+    // after loading a state, without changing the public running/paused status.
+    const pauseHere = pausedCoreDepth === 0 && status === 'running'
+    const ticket = generation
+    if (pauseHere) instance.pauseGame()
+    pausedCoreDepth++
+    try {
+      return action()
+    } finally {
+      pausedCoreDepth--
+      if (pauseHere && core === instance && ticket === generation && status === 'running') instance.resumeGame()
+    }
+  }
   const captureBattery = (includePendingWrites = true) => {
     if (!core || !romName || (status !== 'running' && status !== 'paused')) return null
+    const instance = core
     let data: Uint8Array | null
     if (includePendingWrites) {
       // The core flushes cartridge writes to MEMFS only after they settle.
       // A state snapshot reads actual cartridge memory under the native thread
       // lock, preserving recent writes even when the game is paused at once.
-      try {
-        if (!core.saveState(2)) throw new Error('无法读取当前电池存档，请重试或先导出即时存档。')
-        data = batteryFromState(core.FS.readFile(BATTERY_SNAPSHOT_PATH), core.getSave())
-        // An older save callback must not overwrite this newer snapshot with
-        // MEMFS data that has not caught up with the cartridge's latest writes.
-        pendingBattery = false
-      } finally {
-        if (core.FS.analyzePath(BATTERY_SNAPSHOT_PATH).exists) core.FS.unlink(BATTERY_SNAPSHOT_PATH)
-      }
+      data = withPausedCore(instance, () => {
+        try {
+          if (!instance.saveState(2)) throw new Error('无法读取当前电池存档，请重试或先导出即时存档。')
+          const snapshot = batteryFromState(instance.FS.readFile(BATTERY_SNAPSHOT_PATH), instance.getSave())
+          // An older save callback must not overwrite this newer snapshot with
+          // MEMFS data that has not caught up with the cartridge's latest writes.
+          pendingBattery = false
+          return snapshot
+        } finally {
+          if (instance.FS.analyzePath(BATTERY_SNAPSHOT_PATH).exists) instance.FS.unlink(BATTERY_SNAPSHOT_PATH)
+        }
+      })
     } else {
-      data = core.getSave()
+      data = instance.getSave()
     }
     if (!data?.length) return null
     const bytes = copy(data)
@@ -357,12 +377,14 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
     },
     reset() {
       const instance = assertGame()
-      releaseAllKeys()
-      captureBattery()
-      instance.quickReload()
-      instance.setVolume(volume)
-      instance.setFastForwardMultiplier(speed)
-      if (status === 'paused') instance.pauseGame()
+      withPausedCore(instance, () => {
+        releaseAllKeys()
+        captureBattery()
+        instance.quickReload()
+        instance.setVolume(volume)
+        instance.setFastForwardMultiplier(speed)
+        if (status === 'paused') instance.pauseGame()
+      })
     },
     setVolume(value) {
       volume = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
@@ -383,17 +405,21 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
     releaseAllKeys,
     async saveState() {
       const instance = assertGame()
-      if (!instance.saveState(1)) throw new Error('即时存档失败，请稍后重试。')
-      return copy(instance.FS.readFile(STATE_PATH))
+      return withPausedCore(instance, () => {
+        if (!instance.saveState(1)) throw new Error('即时存档失败，请稍后重试。')
+        return copy(instance.FS.readFile(STATE_PATH))
+      })
     },
     async loadState(bytes) {
       const instance = assertGame()
       if (!bytes.length || bytes.length > 16 * 1024 * 1024) throw new Error('即时存档文件大小无效。')
-      releaseAllKeys()
-      instance.FS.writeFile(STATE_PATH, copy(bytes))
-      if (!instance.loadState(1)) throw new Error('无法读取此即时存档，请确认它属于当前游戏与 mGBA 核心。')
-      if (status === 'paused') instance.pauseGame()
-      captureBatteryAfterAction()
+      withPausedCore(instance, () => {
+        releaseAllKeys()
+        instance.FS.writeFile(STATE_PATH, copy(bytes))
+        if (!instance.loadState(1)) throw new Error('无法读取此即时存档，请确认它属于当前游戏与 mGBA 核心。')
+        if (status === 'paused') instance.pauseGame()
+        captureBatteryAfterAction()
+      })
     },
     async exportSave() {
       assertGame()
@@ -405,6 +431,9 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       const wasPaused = status === 'paused'
       const ticket = ++generation
       releaseAllKeys()
+      // quitGame destroys the old audio device before joining its CPU thread.
+      // Stop that CPU first, just as cartridge switching and disposal do.
+      instance.pauseGame()
       instance.quitGame()
       setStatus('loading')
       pendingBattery = false
@@ -431,13 +460,17 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
     setRewind(enabled) { if (status === 'running') core?.toggleRewind(enabled) },
     async screenshot() {
       const instance = assertGame()
-      // Capture from the core framebuffer, not WebGL's discarded backbuffer.
-      const name = 'capture.png'
-      if (!instance.screenshot(name)) throw new Error('截图失败，请稍后重试。')
-      const path = `/data/screenshots/${name}`
-      const bytes = copy(instance.FS.readFile(path))
-      instance.FS.unlink(path)
-      return new Blob([bytes], { type: 'image/png' })
+      return withPausedCore(instance, () => {
+        // Capture from the core framebuffer, not WebGL's discarded backbuffer.
+        const name = 'capture.png'
+        const path = `/data/screenshots/${name}`
+        try {
+          if (!instance.screenshot(name)) throw new Error('截图失败，请稍后重试。')
+          return new Blob([copy(instance.FS.readFile(path))], { type: 'image/png' })
+        } finally {
+          if (instance.FS.analyzePath(path).exists) instance.FS.unlink(path)
+        }
+      })
     },
     dispose() {
       if (status === 'disposed') return
@@ -445,7 +478,12 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       releaseAllKeys()
       window.clearInterval(batteryTimer)
       if (core) {
-        try { core.pauseGame(); captureBattery() } catch { /* A crashed core may no longer expose its save. */ }
+        try {
+          core.pauseGame()
+          // Disposal must not resume the CPU after its final battery capture.
+          if (status === 'running') status = 'paused'
+          captureBattery()
+        } catch { /* A crashed core may no longer expose its save. */ }
         try { core.hostDispose() } catch (error) { console.warn('[mGBA] 关闭核心失败', error) }
         core = null
       }

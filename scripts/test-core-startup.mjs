@@ -201,6 +201,70 @@ export async function verifyStartup(browser, url) {
     await page.waitForFunction(() => window.fps > 0, undefined, { timeout: 10000 })
     await page.evaluate(() => window.emulator.pause())
 
+    // Fail only after a real native snapshot has been written. This exercises
+    // the adapter's exception cleanup with actual CPU/audio threads still alive.
+    const nativeFailures = []
+    for (const initialStatus of ['running', 'paused']) {
+      const failure = await page.evaluate(async (initialStatus) => {
+        const emulator = window.emulator
+        const core = window.startupCore
+        if (initialStatus === 'running') emulator.resume()
+        else emulator.pause()
+        const saveState = core.saveState
+        const resumeGame = core.resumeGame
+        const readFile = core.FS.readFile
+        let resumes = 0
+        let stateError = ''
+        let screenshotError = ''
+        let stateStatus = ''
+        core.resumeGame = () => { resumes++; resumeGame() }
+        try {
+          core.saveState = (slot) => {
+            const result = saveState(slot)
+            if (slot === 1) throw new Error('Injected failure after native state capture')
+            return result
+          }
+          try {
+            await emulator.saveState()
+          } catch (error) {
+            stateError = error.message
+          }
+          stateStatus = emulator.status
+          core.saveState = saveState
+          core.FS.readFile = (path, ...options) => {
+            if (path === '/data/screenshots/capture.png') throw new Error('Injected screenshot read failure')
+            return readFile(path, ...options)
+          }
+          try {
+            await emulator.screenshot()
+          } catch (error) {
+            screenshotError = error.message
+          }
+        } finally {
+          core.saveState = saveState
+          core.resumeGame = resumeGame
+          core.FS.readFile = readFile
+        }
+        window.fps = 0
+        return {
+          stateError, screenshotError, stateStatus, screenshotStatus: emulator.status, resumes,
+          cleaned: !core.FS.analyzePath('/data/screenshots/capture.png').exists,
+        }
+      }, initialStatus)
+      assert.match(failure.stateError, /Injected failure after native state capture/)
+      assert.match(failure.screenshotError, /Injected screenshot read failure/)
+      assert.equal(failure.stateStatus, initialStatus, 'failed state capture preserves public status')
+      assert.equal(failure.screenshotStatus, initialStatus, 'failed screenshot preserves public status')
+      assert.equal(failure.cleaned, true, 'failed screenshot reads must remove the temporary PNG')
+      if (initialStatus === 'running') {
+        await page.waitForFunction(() => window.fps > 0, undefined, { timeout: 10000 })
+        assert.ok(failure.resumes > 0, 'failed running snapshots resume the native CPU')
+      } else {
+        assert.equal(failure.resumes, 0, 'failed paused snapshots never call native resume')
+      }
+      nativeFailures.push({ initialStatus, restoredStatus: failure.screenshotStatus, cleaned: failure.cleaned })
+    }
+
     // Advance the host's monotonic clock only after the real thread is ready.
     // This verifies the existing 10-second deadline without a wall-clock sleep.
     await page.evaluate(async () => {
@@ -271,6 +335,7 @@ export async function verifyStartup(browser, url) {
       timeout: true,
       disposeDuringLoad: true,
       snapshotFailureCleaned: true,
+      nativeFailures,
       immediateImport: imported,
     }
   } catch (error) {

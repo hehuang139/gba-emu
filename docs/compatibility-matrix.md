@@ -34,11 +34,14 @@ Advance 的 mGBA 线程核心要求页面启用跨源隔离，并依赖 SharedAr
 | 待验证 | 低性能设备 | 需要记录真实硬件、浏览器与内存观测方式 | 未验证 | 持续游玩、倒带帧率、音频中断与内存 |
 | 待验证 | 屏幕阅读器 / 辅助技术 | 需要记录浏览器、阅读器版本与输入方式 | 未验证 | 控件名称、动态状态播报、键盘操作顺序 |
 | 2026-09-10 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | 生产 Vite preview localhost，COOP / COEP，Playwright headless + SwiftShader；独立浏览器上下文 | `test:backup` 验证含 / 不含 ROM 的完整恢复、真实 SRAM 与自动 / 手动存档、取消 / 未来版本零写入、冲突选择、事务中途配额失败回滚与重试、电池单独恢复后刷新、旧核心隔离、忙时键盘焦点及 320×740 / 390×844 / 844×390 视口 | 同一桌面浏览器的独立上下文，不是跨浏览器或移动真机结论；低内存设备峰值、人工音频及屏幕阅读器待验证 |
+| 2026-09-11 | Edge 141.0.3537.71 / Windows 10 Pro 10.0.19045 | 真实 mGBA 与原创 Star Orbit，开发服务上的 Playwright 自动化 | MEMFS 代理修复后，键盘与 engine 回归通过；覆盖八轮运行中存档 / 截图 / 读档 / SRAM 导出、FPS 恢复、原已暂停状态保持、异常清理、启动及旧音频回调 | 生产构建通过；远端结果以实现 PR 检查为准，不增加跨浏览器、真机或人工音频结论 |
 
 复现 Edge 自动化：先运行 `pnpm dev`，另一个 PowerShell 终端设置 `$env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'`。原流程使用 `pnpm test:engine`、`pnpm test:ui`、`pnpm test:zip` 和 `pnpm test:saves`；本轮新增 `pnpm test:keyboard`、`pnpm test:gamepad`、`pnpm test:touch` 和 `pnpm test:startup`。测试截图和触屏视口记录写入 `.artifacts/`。记录结果时注明执行的具体套件与最终结果，不能将脚本存在视为测试通过。
 
 启动与存档回归还覆盖当前游戏首帧完成前禁止读取、启动超时、加载中释放，以及立即暂停后读取当前 SRAM。电池存档通过核心生成的原生快照获取，配套单元测试校验快照结构与解压边界；本轮没有升级核心。这些回归证明对应路径的行为，不增加其他浏览器或实体设备的支持结论。
 
+2026-09-11 的 CDP 栈已定位互锁：主线程忙等 CPU 暂停，CPU worker 等待 `_fd_sync` 主线程代理，而代理的 Promise 完成微任务无法运行。JavaScript 同步入口现将无 `syncfs` 的 MEMFS 及普通代理结果同步完成，异步文件系统仍保留 Promise；`mgba.wasm` 未修改，版本仍为 2.5.1。
+
 未记录的环境不视为已支持。应用要求 HTTPS 或 localhost，以及 `Cross-Origin-Opener-Policy: same-origin` 和 `Cross-Origin-Embedder-Policy: require-corp`；普通 HTTP 局域网地址无法启动线程核心。不同浏览器、驱动和部署仍需独立实测。
 
-备份回归可使用 `pnpm test:backup`；支持上述 `UI_TEST_URL` 与 `BROWSER_EXECUTABLE_PATH`。生成的测试 ROM 是原创 Star Orbit 的头部变体，不引入商业内容。损坏 ZIP、哈希、引用关系、大小限制与事务竞态还由 108 项单元测试中的相应格式 / 存储测试验证。格式限制为软件边界，不作为设备内存能力证明。
+备份回归可使用 `pnpm test:backup`；支持上述 `UI_TEST_URL` 与 `BROWSER_EXECUTABLE_PATH`。生成的测试 ROM 是原创 Star Orbit 的头部变体，不引入商业内容。损坏 ZIP、哈希、引用关系、大小限制与事务竞态还由 113 项单元测试中的相应格式 / 存储测试验证。格式限制为软件边界，不作为设备内存能力证明。
