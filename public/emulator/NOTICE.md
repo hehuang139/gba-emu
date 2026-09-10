@@ -22,12 +22,24 @@ source with the following local changes:
    and ignore events from a previous instance after a cartridge reload. Audio
    teardown also clears `onaudioprocess` before disconnecting its node. This
    prevents delayed Web Audio events from calling freed native audio memory.
+4. `_fd_sync` calls `flushFile()` from the added `host-sync.js`: memory-only
+   filesystems without `syncfs` return synchronously; asynchronous filesystem
+   synchronization keeps its Promise path.
+5. `__emscripten_receive_on_main_thread_js` calls `completeProxy()` from that
+   helper to complete ordinary proxy results immediately and await Promise
+   results only when needed. This avoids a MEMFS deadlock where the main
+   thread waits for CPU pause while the CPU waits for a proxy-completion
+   microtask that the blocked main thread cannot run.
 
 The host methods are visibly marked in `mgba.js`; the audio guards can be
-located by searching for `activeAudio`. The changes are also licensed under
-MPL-2.0. The complete modified JavaScript source is distributed in this file;
-the upstream repository and archive above provide the remaining sources and
-build instructions. No proprietary game ROMs or Nintendo BIOS are included.
+located by searching for `activeAudio`, and the synchronization entry points
+by `flushFile` and `completeProxy`. These changes and the added `host-sync.js`
+are licensed under MPL-2.0. The complete modified JavaScript source is
+distributed as `mgba.js` and `host-sync.js`; the upstream repository and
+archive above provide the remaining sources and build instructions. The
+WebAssembly remains the unmodified 2.5.1 binary below; no core upgrade or
+save-format migration is included. No proprietary game ROMs or Nintendo BIOS
+are included.
 
 Original WebAssembly SHA-256:
 `c4c647d455840df684396b0a03833c1c2332793b73fabbba37d64323ad0c4c8d`

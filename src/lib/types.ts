@@ -9,6 +9,8 @@ export interface Game {
   playTime: number
   favorite: boolean
   color?: string
+  /** Battery-only restoration takes precedence over an older automatic state. */
+  skipAutoState?: boolean
 }
 
 export interface SaveState {
@@ -18,4 +20,6 @@ export interface SaveState {
   data: Uint8Array
   screenshot?: string
   createdAt: number
+  /** Absent on older records whose producing core was not recorded. */
+  coreVersion?: string
 }

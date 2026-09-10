@@ -73,13 +73,21 @@ try {
   await page.keyboard.press('F5')
   console.log('Keyboard: save slot 1')
   await page.getByText('已保存到存档位 1', { exact: true }).waitFor()
+  // The save toast can render before run() has released its operation lock.
+  await page.waitForFunction(() => {
+    const control = document.querySelector('[aria-label="快速读档 (F8)"]')
+    return control && !control.disabled
+  })
+  assert.equal(await page.locator('canvas').evaluate((el) => el === document.activeElement), true)
   await page.keyboard.press('F8')
   await page.getByText('已恢复存档', { exact: true }).waitFor()
   await page.keyboard.press('Escape')
   assert.equal(await button('暂停 (Space)').evaluate((el) => el === document.activeElement), true)
   await activate('返回游戏库')
   await button('开始试玩').waitFor()
-  await page.waitForFunction(() => document.activeElement?.textContent?.includes('开始试玩'))
+  await page.waitForFunction(
+    () => document.activeElement?.tagName === 'BUTTON' && document.activeElement.textContent?.trim() === '开始试玩',
+  )
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify(
