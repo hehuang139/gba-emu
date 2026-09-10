@@ -58,6 +58,7 @@ interface Manifest {
 const HASH = /^[0-9a-f]{64}$/
 const ZIP_ERROR = '备份 ZIP 已损坏或包含无效边界，请重新选择完整备份。'
 const FORMAT_ERROR = '备份清单或游戏信息无效，请重新导出备份。'
+const WORKING_SET_ERROR = '关联 ROM 与存档超过 64 MiB，请减少所选游戏后分批备份。'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
 
@@ -155,7 +156,11 @@ function byteLength(value: unknown, max: number, label: string): number {
   return value.byteLength
 }
 
-/** Synchronous structural validation only; create/parse also verify every ROM content hash. */
+/**
+ * Synchronous structural validation; create/parse additionally verify ROM content hashes.
+ * Format v1 limits the restore working set: every game.size (even omitted ROMs), saves,
+ * and manifest together must fit 64 MiB, so every exported backup can reach restore preview.
+ */
 export function validateBackupData(data: BackupData): void {
   if (!object(data)) throw new Error(FORMAT_ERROR)
   checkHeader(data)
@@ -164,12 +169,13 @@ export function validateBackupData(data: BackupData): void {
   for (const entry of data.games) {
     if (!object(entry)) throw new Error(FORMAT_ERROR)
     checkGame(entry.game)
+    total += entry.game.size
     if (ids.has(entry.game.id)) throw new Error('备份包含重复的游戏内容标识。')
     ids.add(entry.game.id)
     if (!Array.isArray(entry.states) || entry.states.length > 6)
       throw new Error('备份即时存档槽位无效。')
     if (entry.rom !== undefined) {
-      total += byteLength(entry.rom, BACKUP_LIMITS.romBytes, 'ROM')
+      byteLength(entry.rom, BACKUP_LIMITS.romBytes, 'ROM')
       if (entry.rom.byteLength !== entry.game.size)
         throw new Error('备份 ROM 大小与游戏元数据不一致。')
     }
@@ -183,13 +189,11 @@ export function validateBackupData(data: BackupData): void {
       total += byteLength(state.data, BACKUP_LIMITS.stateBytes, '即时存档')
     }
   }
-  if (total > BACKUP_LIMITS.totalBytes)
-    throw new Error('备份解压总大小不能超过 64 MiB，请减少选择的游戏或存档。')
+  if (total > BACKUP_LIMITS.totalBytes) throw new Error(WORKING_SET_ERROR)
   const manifestBytes = encoder.encode(JSON.stringify(manifestSkeleton(data))).length
   if (manifestBytes > BACKUP_LIMITS.manifestBytes)
     throw new Error('备份清单超过 2 MiB，请减少游戏或带截图的存档。')
-  if (total + manifestBytes > BACKUP_LIMITS.totalBytes)
-    throw new Error('备份解压总大小不能超过 64 MiB，请减少选择的游戏或存档。')
+  if (total + manifestBytes > BACKUP_LIMITS.totalBytes) throw new Error(WORKING_SET_ERROR)
 }
 
 export async function sha256(bytes: Uint8Array): Promise<string> {
@@ -593,7 +597,16 @@ function parseManifest(bytes: Uint8Array, entries: ZipEntry[]): Manifest {
     }
   }
   if (references.size !== declared.size) throw new Error('备份包含未引用的额外负载文件。')
-  return value as unknown as Manifest
+  const manifest = value as unknown as Manifest
+  const workingSetBytes =
+    bytes.length +
+    manifest.games.reduce((total, entry) => total + entry.game.size, 0) +
+    manifest.files.reduce(
+      (total, file) => total + (file.path.endsWith('/rom.gba') ? 0 : file.size),
+      0,
+    )
+  if (workingSetBytes > BACKUP_LIMITS.totalBytes) throw new Error(WORKING_SET_ERROR)
+  return manifest
 }
 
 /** Read-only parsing: all ZIP, manifest, byte, hash and reference checks finish before returning. */

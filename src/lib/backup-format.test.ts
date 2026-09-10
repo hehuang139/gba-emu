@@ -483,5 +483,21 @@ test('counts manifest and screenshots toward synchronous metadata and total limi
     data: new Uint8Array(BACKUP_LIMITS.stateBytes),
     createdAt: 1,
   }))
-  assert.throws(() => validateBackupData(total), /总大小.*64 MiB/)
+  assert.throws(() => validateBackupData(total), /关联 ROM 与存档超过 64 MiB/)
+})
+
+test('omitted ROMs still count toward the same 64 MiB restore working-set limit', async () => {
+  const data = await fixture()
+  data.games = Array.from({ length: 3 }, (_, index) => ({
+    game: { ...data.games[0].game, id: String(index).repeat(64), size: 32 * MiB },
+    states: [],
+  }))
+  assert.throws(() => validateBackupData(data), /关联 ROM 与存档超过 64 MiB.*分批备份/)
+  await assert.rejects(createBackup(data), /关联 ROM 与存档超过 64 MiB.*分批备份/)
+  const bytes = mutateManifest(await packed(), (manifest, files) => {
+    manifest.games = data.games
+    manifest.files = []
+    for (const path of Object.keys(files)) if (path !== 'manifest.json') delete files[path]
+  })
+  await assert.rejects(parseBackup(archive(bytes)), /关联 ROM 与存档超过 64 MiB.*分批备份/)
 })

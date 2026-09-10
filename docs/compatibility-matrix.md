@@ -41,4 +41,4 @@ Advance 的 mGBA 线程核心要求页面启用跨源隔离，并依赖 SharedAr
 
 未记录的环境不视为已支持。应用要求 HTTPS 或 localhost，以及 `Cross-Origin-Opener-Policy: same-origin` 和 `Cross-Origin-Embedder-Policy: require-corp`；普通 HTTP 局域网地址无法启动线程核心。不同浏览器、驱动和部署仍需独立实测。
 
-备份回归可使用 `pnpm test:backup`；支持上述 `UI_TEST_URL` 与 `BROWSER_EXECUTABLE_PATH`。生成的测试 ROM 是原创 Star Orbit 的头部变体，不引入商业内容。损坏 ZIP、哈希、引用关系、大小限制与事务竞态还由 107 项单元测试中的相应格式 / 存储测试验证。格式限制为软件边界，不作为设备内存能力证明。
+备份回归可使用 `pnpm test:backup`；支持上述 `UI_TEST_URL` 与 `BROWSER_EXECUTABLE_PATH`。生成的测试 ROM 是原创 Star Orbit 的头部变体，不引入商业内容。损坏 ZIP、哈希、引用关系、大小限制与事务竞态还由 108 项单元测试中的相应格式 / 存储测试验证。格式限制为软件边界，不作为设备内存能力证明。

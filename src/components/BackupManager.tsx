@@ -296,8 +296,8 @@ export function BackupManager({
             </span>
           </label>
           <p className="backup-hint">
-            单份备份最多 {BACKUP_LIMITS.games} 个游戏、{formatSize(BACKUP_LIMITS.totalBytes)}{' '}
-            未压缩数据。较大的游戏库请分批导出。
+            单份备份最多 {BACKUP_LIMITS.games} 个游戏、{formatSize(BACKUP_LIMITS.totalBytes)} 关联
+            ROM、存档与清单。省略 ROM 也计入此分批限制，较大的游戏库请减少选择后导出。
           </p>
           {selected.length > BACKUP_LIMITS.games ? (
             <p className="backup-hint backup-warning">已超过单份备份的游戏数量上限，请减少选择。</p>
