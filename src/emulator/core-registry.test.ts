@@ -10,5 +10,5 @@ test('exposes bundled GBA capabilities', () => {
 
 test('reports unavailable platforms explicitly', () => {
   assert.equal(coreForPlatform('nes'), null)
-  assert.throws(() => requireCoreForPlatform('ps2'), /PlayStation 2.*尚未集成核心/)
+  assert.throws(() => requireCoreForPlatform('ps2'), /PlayStation 2.*核心尚未集成/)
 })
