@@ -361,6 +361,10 @@ button:disabled:hover {
 .main-shell {
   margin-left: 231px;
 }
+/* Some browsers defer responsive layout inside inert subtrees while a dialog is open. */
+.main-shell[inert] {
+  overflow-x: clip;
+}
 .topbar {
   height: 73px;
   border-bottom: 1px solid var(--border);

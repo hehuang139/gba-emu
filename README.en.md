@@ -77,6 +77,7 @@ The mobile layout includes a D-pad, A / B, L / R and Start / Select touch button
 
 ## Features
 
+- **Portable backups:** choose games and optionally include ROMs in a versioned ZIP with SHA-256 checksums. Preview before restoring, match missing ROMs by content, select individual conflicts, and roll back the entire restore on failure. Existing progress is kept by default; unknown or different-core states are unchecked.
 - **Real emulation:** mGBA WASM graphics, audio and SRAM / Flash / EEPROM battery saves.
 - **Local library:** multiple-file and drag-and-drop imports, search, sorting, favorites, recent play, playtime, grid and list views.
 - **ZIP support:** import `.gba` files from nested folders, with content-based deduplication that preserves existing progress.

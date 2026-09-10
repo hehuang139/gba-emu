@@ -52,12 +52,15 @@ import { useGamepads } from './hooks/useGamepads'
 import { GamepadSettings } from './components/GamepadSettings'
 import { TouchControls } from './components/TouchControls'
 import { TouchSettings } from './components/TouchSettings'
+import { BackupManager } from './components/BackupManager'
+import { createBackup } from './lib/backup-format'
+import type { BackupData } from './lib/backup-format'
 import type { Settings } from './lib/preferences'
 import { probeCompatibility } from './lib/compatibility'
 import type { CompatibilityReport } from './lib/compatibility'
 
 type Page = 'library' | 'recent' | 'favorites' | 'states'
-type Modal = 'settings' | 'controls' | 'help' | 'states' | null
+type Modal = 'settings' | 'controls' | 'help' | 'states' | 'backup' | null
 const pages: Record<Page, string> = {
   library: '游戏库',
   recent: '最近游玩',
@@ -185,6 +188,8 @@ export default function App() {
   const activeRef = useRef<Game | null>(null)
   const settingsRef = useRef(settings)
   const operationRef = useRef(false)
+  const maintenanceRef = useRef(false)
+  const pendingWrites = useRef(new Set<Promise<unknown>>())
   const inputRef = useRef<HTMLInputElement>(null)
   const saveInputRef = useRef<HTMLInputElement>(null)
   const stateInputRef = useRef<HTMLInputElement>(null)
@@ -192,6 +197,9 @@ export default function App() {
   const mappingRef = useRef(mapping)
   mappingRef.current = mapping
   const launchTrigger = useRef<HTMLElement | null>(null)
+  const launchTriggerName = useRef('')
+  const returnFocusPending = useRef(false)
+  const backupTrigger = useRef<HTMLElement | null>(null)
   const input = useMemo(
     () =>
       createInputController(
@@ -222,6 +230,11 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), error ? 7000 : 3500)
   }, [])
   const refresh = useCallback(async () => setGames(await db.getGames()), [])
+  const trackWrite = useCallback(<T,>(promise: Promise<T>): Promise<T> => {
+    pendingWrites.current.add(promise)
+    void promise.finally(() => pendingWrites.current.delete(promise)).catch(() => {})
+    return promise
+  }, [])
   const run = useCallback(
     async (action: () => Promise<void>) => {
       if (operationRef.current) return
@@ -277,8 +290,8 @@ export default function App() {
     }
   }, [notify])
 
-  useEffect(() => {
-    if (!canvasRef.current) return
+  const makeEngine = useCallback(() => {
+    if (!canvasRef.current) throw new Error('模拟器画面尚未就绪')
     const engine = createEmulator(canvasRef.current, {
       onStatus: setStatus,
       onFps: setFps,
@@ -289,18 +302,55 @@ export default function App() {
       },
       onSaveChange: (bytes) => {
         const game = activeRef.current
-        if (game)
-          void db
-            .setBatterySave(game.id, bytes)
-            .catch(() => notify('游戏内存档写入失败，请导出备份', true))
+        if (game && !maintenanceRef.current)
+          void trackWrite(db.setBatterySave(game.id, bytes)).catch(() =>
+            notify('游戏内存档写入失败，请导出备份', true),
+          )
       },
     })
+    return engine
+  }, [notify, trackWrite])
+
+  useEffect(() => {
+    const engine = makeEngine()
     engineRef.current = engine
     return () => {
-      engine.dispose()
+      engineRef.current?.dispose()
       engineRef.current = null
     }
-  }, [notify])
+  }, [makeEngine])
+
+  useEffect(() => {
+    if (modal !== 'backup' && !deleteTarget) maintenanceRef.current = false
+  }, [modal, deleteTarget])
+
+  useEffect(() => {
+    if (active || busy || !returnFocusPending.current) return
+    returnFocusPending.current = false
+    const name = (element: HTMLElement) =>
+      element.getAttribute('aria-label') ?? element.textContent?.trim()
+    const available = (element: HTMLElement) =>
+      !element.matches(':disabled') && element.getClientRects().length > 0
+    const previous = launchTrigger.current
+    const target =
+      previous?.isConnected && available(previous) && name(previous) === launchTriggerName.current
+        ? previous
+        : (Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+            (element) => available(element) && name(element) === launchTriggerName.current,
+          ) ??
+          document.querySelector<HTMLButtonElement>('.hero-actions button:not(:disabled)') ??
+          document.querySelector<HTMLButtonElement>('.import-top:not(:disabled)'))
+    target?.focus()
+  }, [active, busy])
+
+  useEffect(() => {
+    if (!busy || modal !== 'backup') return
+    const previous = document.activeElement as HTMLElement | null
+    modalRef.current?.focus()
+    return () => {
+      if (previous?.isConnected && !previous.matches(':disabled')) previous.focus()
+    }
+  }, [busy, modal])
 
   useEffect(() => {
     settingsRef.current = settings
@@ -345,10 +395,10 @@ export default function App() {
       const now = Date.now(),
         elapsed = Math.floor((now - lastTick) / 1000)
       lastTick = now
-      if (elapsed < 1) return
+      if (elapsed < 1 || maintenanceRef.current) return
       try {
         const current = (await db.getGames()).find((g) => g.id === active.id)
-        if (current) {
+        if (current && !maintenanceRef.current) {
           await db.updateGame(active.id, { playTime: current.playTime + elapsed })
           await refresh()
         }
@@ -357,13 +407,13 @@ export default function App() {
       }
     }
     const timer = setInterval(() => {
-      void tick()
+      void trackWrite(tick())
     }, 15000)
     return () => {
       clearInterval(timer)
-      void tick()
+      void trackWrite(tick())
     }
-  }, [active, status, refresh])
+  }, [active, status, refresh, trackWrite])
 
   useEffect(() => {
     if (!active || !settings.autoSave || status !== 'running') return
@@ -413,21 +463,36 @@ export default function App() {
   useEffect(() => {
     if (!modal && !deleteTarget) return
     releaseInputs()
-    const previous = document.activeElement as HTMLElement | null
+    const previous =
+      modal === 'backup' ? backupTrigger.current : (document.activeElement as HTMLElement | null)
     const first = modalRef.current?.querySelector<HTMLElement>('button, input, select')
     first?.focus()
     const trap = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !mappingRef.current && !event.defaultPrevented) {
+      if (
+        event.key === 'Escape' &&
+        !mappingRef.current &&
+        !event.defaultPrevented &&
+        !operationRef.current
+      ) {
         setModal(null)
         setDeleteTarget(null)
       }
       if (event.key !== 'Tab') return
+      if (operationRef.current) {
+        event.preventDefault()
+        modalRef.current?.focus()
+        return
+      }
       const elements = Array.from(
         modalRef.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]',
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]',
         ) || [],
       ).filter((element) => element.getClientRects().length > 0)
-      if (!elements.length) return
+      if (!elements.length) {
+        event.preventDefault()
+        modalRef.current?.focus()
+        return
+      }
       const first = elements[0],
         last = elements[elements.length - 1]
       if (
@@ -438,7 +503,11 @@ export default function App() {
         event.preventDefault()
         last.focus()
       }
-      if (!event.shiftKey && document.activeElement === last) {
+      if (
+        !event.shiftKey &&
+        (document.activeElement === last ||
+          !elements.includes(document.activeElement as HTMLElement))
+      ) {
         event.preventDefault()
         first.focus()
       }
@@ -455,7 +524,13 @@ export default function App() {
       run(async () => {
         const engine = engineRef.current
         if (!engine) throw new Error('模拟器尚未就绪')
-        if (!activeRef.current) launchTrigger.current = document.activeElement as HTMLElement
+        if (!activeRef.current) {
+          launchTrigger.current = document.activeElement as HTMLElement
+          launchTriggerName.current =
+            launchTrigger.current.getAttribute('aria-label') ??
+            launchTrigger.current.textContent?.trim() ??
+            ''
+        }
         releaseInputs()
         if (activeRef.current && ['running', 'paused'].includes(engine.status)) {
           engine.pause()
@@ -466,16 +541,20 @@ export default function App() {
         const bytes = await db.getRom(game.id)
         if (!bytes) throw new Error('游戏文件未找到，请重新导入')
         const battery = await db.getBatterySave(game.id)
+        const currentGame = (await db.getGames()).find((item) => item.id === game.id) ?? game
         const resume =
           requestedState ||
-          (settingsRef.current.autoSave ? await db.getState(game.id, 0) : undefined)
-        activeRef.current = game
-        setActive(game)
+          (settingsRef.current.autoSave && !currentGame.skipAutoState
+            ? await db.getState(game.id, 0)
+            : undefined)
+        // loadRom flushes the previous cartridge. Keep its identity until that flush ends.
+        setActive(currentGame)
         setPage('library')
         setModal(null)
         setProgress('正在启动 mGBA 内核…')
         setLaunchError('')
         await engine.loadRom(bytes, game.filename)
+        activeRef.current = currentGame
         if (battery) await engine.importSave(battery)
         engine.setVolume(settingsRef.current.volume)
         engine.setSpeed(settingsRef.current.speed)
@@ -509,14 +588,10 @@ export default function App() {
         engine.releaseAllKeys()
       }
       activeRef.current = null
+      returnFocusPending.current = true
       setActive(null)
       setStates([])
       await refresh()
-      requestAnimationFrame(() => {
-        const trigger = launchTrigger.current
-        if (trigger?.isConnected && trigger.getClientRects().length) trigger.focus()
-        else document.querySelector<HTMLButtonElement>('.hero-actions button, .import-top')?.focus()
-      })
       notify('已返回游戏库')
     })
 
@@ -695,10 +770,65 @@ export default function App() {
       notify('收藏更新失败', true)
     }
   }
+  const discardSession = () => {
+    activeRef.current = null
+    engineRef.current?.dispose()
+    engineRef.current = makeEngine()
+    setActive(null)
+    setStates([])
+    setStatus('idle')
+    setFps(0)
+  }
+  const openBackup = () =>
+    run(async () => {
+      backupTrigger.current = document.activeElement as HTMLElement | null
+      maintenanceRef.current = true
+      try {
+        releaseInputs()
+        engineRef.current?.pause()
+        await Promise.all(Array.from(pendingWrites.current))
+        const game = activeRef.current
+        const engine = engineRef.current
+        if (game && engine && ['running', 'paused'].includes(engine.status)) {
+          // Explicit capture is required: pause's best-effort callback is insufficient.
+          const bytes = await engine.exportSave()
+          if (bytes) await db.setBatterySave(game.id, bytes)
+        }
+        await refresh()
+        setSidebarOpen(false)
+        setModal('backup')
+      } catch (error) {
+        maintenanceRef.current = false
+        throw error
+      }
+    })
+  const exportLibrary = async (
+    ids: string[],
+    includeRoms: boolean,
+    onProgress: (message: string) => void,
+  ) => {
+    onProgress('正在读取游戏库快照…')
+    const data = await db.getLibrarySnapshot(ids, includeRoms)
+    const bytes = await createBackup(data, { includeRoms, onProgress })
+    download(bytes, `advance-backup-${new Date().toISOString().slice(0, 10)}.zip`)
+  }
+  const restoreLibrary = async (data: BackupData, choices: db.RestoreChoices) => {
+    await db.restoreLibrary(data, choices)
+    // Discard the old core while writes are still blocked; it must never resume stale SRAM.
+    discardSession()
+    setPage('library')
+    setAllStates([])
+    try {
+      await refresh()
+    } catch {
+      notify('恢复已完成，但游戏库列表刷新失败，请刷新页面查看恢复结果。', true)
+    }
+  }
   const deleteGame = () =>
     run(async () => {
       if (!deleteTarget) return
       await db.deleteGame(deleteTarget.id)
+      if (activeRef.current?.id === deleteTarget.id) discardSession()
       setDeleteTarget(null)
       setGameMenu(null)
       await refresh()
@@ -868,6 +998,10 @@ export default function App() {
         </nav>
         <div className="nav-group-title second">偏好设置</div>
         <nav aria-label="偏好设置">
+          <button className="nav-item" disabled={busy || !ready} onClick={() => void openBackup()}>
+            <HardDrive size={18} />
+            <span>备份与恢复</span>
+          </button>
           <button
             className="nav-item"
             onClick={() => {
@@ -1662,7 +1796,7 @@ export default function App() {
         <div
           className="modal-backdrop"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+            if (event.target === event.currentTarget && !operationRef.current) {
               setModal(null)
               setMapping(null)
               setDeleteTarget(null)
@@ -1670,8 +1804,9 @@ export default function App() {
           }}
         >
           <div
-            className={`modal ${modal === 'states' ? 'wide-modal' : ''}`}
+            className={`modal ${modal === 'states' || modal === 'backup' ? 'wide-modal' : ''}`}
             ref={modalRef}
+            tabIndex={-1}
             role={deleteTarget ? 'alertdialog' : 'dialog'}
             aria-modal="true"
             aria-labelledby="modal-title"
@@ -1686,13 +1821,16 @@ export default function App() {
                       ? '找到你的顺手操作'
                       : modal === 'settings'
                         ? '你的模拟器，你来定义'
-                        : modal === 'states'
-                          ? '给冒险留个书签'
-                          : '准备好，开始冒险'}
+                        : modal === 'backup'
+                          ? '备份与恢复'
+                          : modal === 'states'
+                            ? '给冒险留个书签'
+                            : '准备好，开始冒险'}
                 </h2>
               </div>
               <IconButton
                 label="关闭对话框"
+                disabled={busy}
                 onClick={() => {
                   setModal(null)
                   setMapping(null)
@@ -1709,7 +1847,11 @@ export default function App() {
                   」及其所有本地存档。此操作无法撤销，请先导出需要保留的存档。
                 </p>
                 <div className="modal-actions">
-                  <button className="button secondary" onClick={() => setDeleteTarget(null)}>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => setDeleteTarget(null)}
+                  >
                     取消
                   </button>
                   <button
@@ -1722,6 +1864,17 @@ export default function App() {
                   </button>
                 </div>
               </>
+            ) : modal === 'backup' ? (
+              <BackupManager
+                games={games}
+                onExport={exportLibrary}
+                onRestore={restoreLibrary}
+                onDelete={setDeleteTarget}
+                onBusyChange={(value) => {
+                  operationRef.current = value
+                  setBusy(value)
+                }}
+              />
             ) : modal === 'controls' ? (
               <>
                 <p className="modal-description">

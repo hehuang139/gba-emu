@@ -225,6 +225,15 @@ try {
   await controls.waitFor({ state: 'visible' })
   await pointer(a, 'pointerdown', 8)
   await page.getByRole('button', { name: '暂停 (Space)', exact: true }).click()
+  await page.getByRole('button', { name: '继续 (Space)', exact: true }).waitFor()
+  await page.waitForFunction(
+    () => {
+      const key = document.querySelector('.advance-touch [aria-label="A 按钮"]')
+      return key?.disabled && !key.classList.contains('is-pressed')
+    },
+    null,
+    { timeout: 1500 },
+  )
   assert.equal(await pressed(a), false, 'pausing releases touches')
   assert.equal(await a.isDisabled(), true)
   assert.deepEqual(errors, [], 'no uncaught browser errors')

@@ -1,4 +1,7 @@
 import type { Game, SaveState } from './types.ts'
+import { BUNDLED_CORE_ID } from './core-version.ts'
+import { BACKUP_LIMITS, sha256, validateBackupData } from './backup-format.ts'
+import type { BackupData, BackupGame } from './backup-format.ts'
 
 const DATABASE_NAME = 'advance-gba'
 const DATABASE_VERSION = 1
@@ -9,8 +12,11 @@ const STORES = { games: 'games', roms: 'roms', states: 'states', batteries: 'bat
 function storageError(error: unknown): Error {
   if (error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)) return error
   const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : ''
-  if (name === 'QuotaExceededError') return new Error('本地存储空间不足，请删除不需要的游戏或存档后重试。')
-  if (name === 'SecurityError' || name === 'InvalidStateError') return new Error('浏览器无法访问本地存储，请检查隐私设置或退出无痕模式后重试。')
+  if (name === 'QuotaExceededError')
+    return new Error('本地存储空间不足，请删除不需要的游戏或存档后重试。')
+  if (name === 'AbortError') return new Error('本地游戏库操作已取消，请重试。')
+  if (name === 'SecurityError' || name === 'InvalidStateError')
+    return new Error('浏览器无法访问本地存储，请检查隐私设置或退出无痕模式后重试。')
   if (name === 'VersionError') return new Error('本地游戏库版本较新，请刷新页面或更新应用后重试。')
   return new Error('本地游戏库读写失败，请刷新页面后重试。', { cause: error })
 }
@@ -22,13 +28,21 @@ function openDatabase(): Promise<IDBDatabase> {
       return
     }
     let request: IDBOpenDBRequest
-    try { request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION) } catch (error) { reject(storageError(error)); return }
+    try {
+      request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
+    } catch (error) {
+      reject(storageError(error))
+      return
+    }
     let blocked = false
     request.onupgradeneeded = () => {
       const db = request.result
-      if (!db.objectStoreNames.contains(STORES.games)) db.createObjectStore(STORES.games, { keyPath: 'id' })
-      if (!db.objectStoreNames.contains(STORES.roms)) db.createObjectStore(STORES.roms, { keyPath: 'id' })
-      if (!db.objectStoreNames.contains(STORES.batteries)) db.createObjectStore(STORES.batteries, { keyPath: 'gameId' })
+      if (!db.objectStoreNames.contains(STORES.games))
+        db.createObjectStore(STORES.games, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains(STORES.roms))
+        db.createObjectStore(STORES.roms, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains(STORES.batteries))
+        db.createObjectStore(STORES.batteries, { keyPath: 'gameId' })
       if (!db.objectStoreNames.contains(STORES.states)) {
         const states = db.createObjectStore(STORES.states, { keyPath: 'id' })
         states.createIndex('gameId', 'gameId', { unique: false })
@@ -41,7 +55,10 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onerror = () => reject(storageError(request.error))
     request.onsuccess = () => {
       const db = request.result
-      if (blocked) { db.close(); return }
+      if (blocked) {
+        db.close()
+        return
+      }
       db.onversionchange = () => db.close()
       resolve(db)
     }
@@ -55,14 +72,29 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   })
 }
 
-async function transaction<T>(stores: string[], mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T>): Promise<T> {
+async function transaction<T>(
+  stores: string[],
+  mode: IDBTransactionMode,
+  work: (tx: IDBTransaction) => Promise<T>,
+): Promise<T> {
   const db = await openDatabase()
   let tx: IDBTransaction
-  try { tx = db.transaction(stores, mode) } catch (error) { db.close(); throw storageError(error) }
+  try {
+    tx = db.transaction(stores, mode)
+  } catch (error) {
+    db.close()
+    throw storageError(error)
+  }
+  let aborted = false
   const completion = new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve()
-    tx.onabort = () => reject(tx.error ?? new Error('本地游戏库操作已取消，请重试。'))
-    tx.onerror = () => { /* onabort owns the final transaction error. */ }
+    tx.onabort = () => {
+      aborted = true
+      reject(tx.error ?? new Error('本地游戏库操作已取消，请重试。'))
+    }
+    tx.onerror = () => {
+      /* onabort owns the final transaction error. */
+    }
   })
   // Mark the rejection handled even if it arrives before an awaited request.
   void completion.catch(() => {})
@@ -71,10 +103,23 @@ async function transaction<T>(stores: string[], mode: IDBTransactionMode, work: 
     await completion
     return result
   } catch (error) {
-    try { tx.abort() } catch { /* The transaction may already have finished. */ }
+    try {
+      tx.abort()
+    } catch {
+      /* The transaction may already have finished. */
+    }
     await completion.catch(() => {})
+    if (
+      aborted &&
+      error instanceof DOMException &&
+      ['InvalidStateError', 'TransactionInactiveError'].includes(error.name)
+    ) {
+      throw new Error('本地游戏库操作已取消，请重试。')
+    }
     throw storageError(error)
-  } finally { db.close() }
+  } finally {
+    db.close()
+  }
 }
 
 function isTimestamp(value: unknown): value is number {
@@ -84,11 +129,23 @@ function isTimestamp(value: unknown): value is number {
 function gameRecord(value: unknown): Game {
   if (!value || typeof value !== 'object') throw new Error('游戏信息已损坏，请删除后重新导入 ROM。')
   const game = value as Game
-  if (typeof game.id !== 'string' || !game.id || typeof game.title !== 'string' || !game.title.trim()
-    || typeof game.filename !== 'string' || !game.filename || !Number.isInteger(game.size)
-    || game.size < MIN_ROM_SIZE || game.size > MAX_ROM_SIZE || !isTimestamp(game.addedAt)
-    || (game.lastPlayed !== null && !isTimestamp(game.lastPlayed)) || !isTimestamp(game.playTime)
-    || typeof game.favorite !== 'boolean' || (game.color !== undefined && typeof game.color !== 'string')) {
+  if (
+    typeof game.id !== 'string' ||
+    !game.id ||
+    typeof game.title !== 'string' ||
+    !game.title.trim() ||
+    typeof game.filename !== 'string' ||
+    !game.filename ||
+    !Number.isInteger(game.size) ||
+    game.size < MIN_ROM_SIZE ||
+    game.size > MAX_ROM_SIZE ||
+    !isTimestamp(game.addedAt) ||
+    (game.lastPlayed !== null && !isTimestamp(game.lastPlayed)) ||
+    !isTimestamp(game.playTime) ||
+    typeof game.favorite !== 'boolean' ||
+    (game.color !== undefined && typeof game.color !== 'string') ||
+    (game.skipAutoState !== undefined && typeof game.skipAutoState !== 'boolean')
+  ) {
     throw new Error('游戏信息已损坏，请删除后重新导入 ROM。')
   }
   return game
@@ -100,16 +157,25 @@ function copyBytes(value: unknown, message: string): Uint8Array {
 }
 
 function stateId(gameId: string, slot: number): string {
-  if (!gameId || !Number.isSafeInteger(slot) || slot < 0) throw new Error('存档槽位无效，请选择有效的存档槽位。')
+  if (!gameId || !Number.isSafeInteger(slot) || slot < 0)
+    throw new Error('存档槽位无效，请选择有效的存档槽位。')
   return `${gameId}:${slot}`
 }
 
 function stateRecord(value: unknown): SaveState {
   if (!value || typeof value !== 'object') throw new Error('即时存档已损坏，请使用其他存档。')
   const state = value as SaveState
-  if (typeof state.gameId !== 'string' || !state.gameId || !Number.isSafeInteger(state.slot) || state.slot < 0
-    || state.id !== `${state.gameId}:${state.slot}` || !isTimestamp(state.createdAt)
-    || (state.screenshot !== undefined && typeof state.screenshot !== 'string')) {
+  if (
+    typeof state.gameId !== 'string' ||
+    !state.gameId ||
+    !Number.isSafeInteger(state.slot) ||
+    state.slot < 0 ||
+    state.id !== `${state.gameId}:${state.slot}` ||
+    !isTimestamp(state.createdAt) ||
+    (state.screenshot !== undefined && typeof state.screenshot !== 'string') ||
+    (state.coreVersion !== undefined &&
+      (typeof state.coreVersion !== 'string' || !state.coreVersion))
+  ) {
     throw new Error('即时存档已损坏，请使用其他存档。')
   }
   return { ...state, data: copyBytes(state.data, '即时存档已损坏，请使用其他存档。') }
@@ -122,28 +188,50 @@ async function requireGame(tx: IDBTransaction, id: string): Promise<Game> {
 }
 
 export async function getGames(): Promise<Game[]> {
-  return transaction([STORES.games], 'readonly', async tx => {
+  return transaction([STORES.games], 'readonly', async (tx) => {
     const games = await requestResult(tx.objectStore(STORES.games).getAll())
-    return games.map(gameRecord).sort((a, b) => (b.lastPlayed ?? b.addedAt) - (a.lastPlayed ?? a.addedAt))
+    return games
+      .map(gameRecord)
+      .sort((a, b) => (b.lastPlayed ?? b.addedAt) - (a.lastPlayed ?? a.addedAt))
   })
 }
 
 export async function importGame(file: File): Promise<Game> {
   if (!/\.gba$/i.test(file.name)) throw new Error('请选择 .gba 格式的 Game Boy Advance 游戏文件。')
-  if (file.size < MIN_ROM_SIZE || file.size > MAX_ROM_SIZE) throw new Error('ROM 大小无效，GBA 游戏文件应为 192 字节至 32 MB。')
+  if (file.size < MIN_ROM_SIZE || file.size > MAX_ROM_SIZE)
+    throw new Error('ROM 大小无效，GBA 游戏文件应为 192 字节至 32 MB。')
   let bytes: Uint8Array
-  try { bytes = new Uint8Array(await file.arrayBuffer()) } catch { throw new Error('无法读取游戏文件，请重新选择后重试。') }
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer())
+  } catch {
+    throw new Error('无法读取游戏文件，请重新选择后重试。')
+  }
   if (bytes.byteLength !== file.size) throw new Error('游戏文件读取不完整，请重新选择后重试。')
-  if (!globalThis.crypto?.subtle) throw new Error('浏览器无法校验游戏文件，请使用 HTTPS 或 localhost 打开应用。')
+  if (!globalThis.crypto?.subtle)
+    throw new Error('浏览器无法校验游戏文件，请使用 HTTPS 或 localhost 打开应用。')
   const digest = await crypto.subtle.digest('SHA-256', bytes)
-  const id = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-  return transaction([STORES.games, STORES.roms], 'readwrite', async tx => {
+  const id = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  )
+  return transaction([STORES.games, STORES.roms], 'readwrite', async (tx) => {
     const existing = await requestResult(tx.objectStore(STORES.games).get(id))
-    const game = existing === undefined ? {
-      id, title: file.name.replace(/\.gba$/i, '').replace(/[_]+/g, ' ').trim() || '未命名游戏',
-      filename: file.name, size: bytes.byteLength, addedAt: Date.now(), lastPlayed: null,
-      playTime: 0, favorite: false,
-    } satisfies Game : gameRecord(existing)
+    const game =
+      existing === undefined
+        ? ({
+            id,
+            title:
+              file.name
+                .replace(/\.gba$/i, '')
+                .replace(/[_]+/g, ' ')
+                .trim() || '未命名游戏',
+            filename: file.name,
+            size: bytes.byteLength,
+            addedAt: Date.now(),
+            lastPlayed: null,
+            playTime: 0,
+            favorite: false,
+          } satisfies Game)
+        : gameRecord(existing)
     // Reimporting deduplicates metadata while repairing any missing ROM bytes.
     await requestResult(tx.objectStore(STORES.roms).put({ id, data: bytes }))
     if (existing === undefined) await requestResult(tx.objectStore(STORES.games).add(game))
@@ -152,7 +240,7 @@ export async function importGame(file: File): Promise<Game> {
 }
 
 export async function updateGame(id: string, changes: Partial<Game>): Promise<Game> {
-  return transaction([STORES.games], 'readwrite', async tx => {
+  return transaction([STORES.games], 'readwrite', async (tx) => {
     const current = await requireGame(tx, id)
     const updated = gameRecord({ ...current, ...changes, id: current.id })
     await requestResult(tx.objectStore(STORES.games).put(updated))
@@ -161,7 +249,7 @@ export async function updateGame(id: string, changes: Partial<Game>): Promise<Ga
 }
 
 export async function getRom(id: string): Promise<Uint8Array | undefined> {
-  return transaction([STORES.games, STORES.roms], 'readonly', async tx => {
+  return transaction([STORES.games, STORES.roms], 'readonly', async (tx) => {
     const record = await requestResult(tx.objectStore(STORES.roms).get(id))
     if (record === undefined) return undefined
     const game = await requireGame(tx, id)
@@ -172,19 +260,21 @@ export async function getRom(id: string): Promise<Uint8Array | undefined> {
 }
 
 export async function deleteGame(id: string): Promise<void> {
-  return transaction(Object.values(STORES), 'readwrite', async tx => {
-    const stateKeys = await requestResult(tx.objectStore(STORES.states).index('gameId').getAllKeys(id))
+  return transaction(Object.values(STORES), 'readwrite', async (tx) => {
+    const stateKeys = await requestResult(
+      tx.objectStore(STORES.states).index('gameId').getAllKeys(id),
+    )
     await Promise.all([
       requestResult(tx.objectStore(STORES.games).delete(id)),
       requestResult(tx.objectStore(STORES.roms).delete(id)),
       requestResult(tx.objectStore(STORES.batteries).delete(id)),
-      ...stateKeys.map(key => requestResult(tx.objectStore(STORES.states).delete(key))),
+      ...stateKeys.map((key) => requestResult(tx.objectStore(STORES.states).delete(key))),
     ])
   })
 }
 
 export async function getStates(gameId: string): Promise<SaveState[]> {
-  return transaction([STORES.states], 'readonly', async tx => {
+  return transaction([STORES.states], 'readonly', async (tx) => {
     const states = await requestResult(tx.objectStore(STORES.states).index('gameId').getAll(gameId))
     return states.map(stateRecord).sort((a, b) => a.slot - b.slot)
   })
@@ -192,40 +282,422 @@ export async function getStates(gameId: string): Promise<SaveState[]> {
 
 export async function getState(gameId: string, slot: number): Promise<SaveState | undefined> {
   const id = stateId(gameId, slot)
-  return transaction([STORES.states], 'readonly', async tx => {
+  return transaction([STORES.states], 'readonly', async (tx) => {
     const value = await requestResult(tx.objectStore(STORES.states).get(id))
     return value === undefined ? undefined : stateRecord(value)
   })
 }
 
-export async function saveState(gameId: string, slot: number, data: Uint8Array, screenshot?: string): Promise<SaveState> {
+export async function saveState(
+  gameId: string,
+  slot: number,
+  data: Uint8Array,
+  screenshot?: string,
+): Promise<SaveState> {
   const id = stateId(gameId, slot)
-  const state = stateRecord({ id, gameId, slot, data, screenshot, createdAt: Date.now() })
-  return transaction([STORES.games, STORES.states], 'readwrite', async tx => {
-    await requireGame(tx, gameId)
+  const state = stateRecord({
+    id,
+    gameId,
+    slot,
+    data,
+    screenshot,
+    createdAt: Date.now(),
+    coreVersion: BUNDLED_CORE_ID,
+  })
+  return transaction([STORES.games, STORES.states], 'readwrite', async (tx) => {
+    const game = await requireGame(tx, gameId)
     await requestResult(tx.objectStore(STORES.states).put(state))
+    if (slot === 0 && game.skipAutoState)
+      await requestResult(tx.objectStore(STORES.games).put({ ...game, skipAutoState: false }))
     return state
   })
 }
 
 export async function deleteState(gameId: string, slot: number): Promise<void> {
   const id = stateId(gameId, slot)
-  return transaction([STORES.states], 'readwrite', async tx => {
+  return transaction([STORES.states], 'readwrite', async (tx) => {
     await requestResult(tx.objectStore(STORES.states).delete(id))
   })
 }
 
 export async function getBatterySave(gameId: string): Promise<Uint8Array | undefined> {
-  return transaction([STORES.batteries], 'readonly', async tx => {
+  return transaction([STORES.batteries], 'readonly', async (tx) => {
     const record = await requestResult(tx.objectStore(STORES.batteries).get(gameId))
-    return record === undefined ? undefined : copyBytes(record.data, '游戏电池存档已损坏，请导入备份存档。')
+    return record === undefined
+      ? undefined
+      : copyBytes(record.data, '游戏电池存档已损坏，请导入备份存档。')
+  })
+}
+
+/** Counts storage records without reading their state or battery byte buffers. */
+export async function getStorageSummary(
+  gameId: string,
+): Promise<{ states: number; battery: boolean }> {
+  return transaction([STORES.states, STORES.batteries], 'readonly', async (tx) => {
+    const [states, batteryKey] = await Promise.all([
+      requestResult(tx.objectStore(STORES.states).index('gameId').count(gameId)),
+      requestResult(tx.objectStore(STORES.batteries).getKey(gameId)),
+    ])
+    return { states, battery: batteryKey !== undefined }
   })
 }
 
 export async function setBatterySave(gameId: string, data: Uint8Array): Promise<void> {
   const bytes = copyBytes(data, '电池存档为空或格式无效，请选择有效的 .sav 文件。')
-  return transaction([STORES.games, STORES.batteries], 'readwrite', async tx => {
+  return transaction([STORES.games, STORES.batteries], 'readwrite', async (tx) => {
     await requireGame(tx, gameId)
     await requestResult(tx.objectStore(STORES.batteries).put({ gameId, data: bytes }))
+  })
+}
+
+export interface RestoreGameChoice {
+  metadata: boolean
+  battery: boolean
+  slots: number[]
+}
+
+export interface RestoreChoices {
+  /** The local library fingerprint returned by the most recent preview. */
+  fingerprint: string
+  /** Omitted games are not restored. Each field is an explicit selection. */
+  games: Record<string, RestoreGameChoice>
+}
+
+export interface RestoreGamePreview {
+  game: Game
+  local?: Game
+  missingRom: boolean
+  battery: { available: boolean; conflict: boolean }
+  states: {
+    slot: number
+    createdAt: number
+    coreVersion?: string
+    conflict: boolean
+    incompatible: boolean
+  }[]
+  defaults: RestoreGameChoice
+}
+
+export interface RestorePreview {
+  fingerprint: string
+  games: RestoreGamePreview[]
+  totalBytes: number
+  stateCount: number
+}
+
+interface LibraryRecord {
+  id: string
+  game?: Game
+  hasRom: boolean
+  rom?: Uint8Array
+  battery?: Uint8Array
+  states: SaveState[]
+}
+
+/** All requests run in the caller's one transaction; no hashing or timers here. */
+async function readLibrary(
+  tx: IDBTransaction,
+  gameIds?: string[],
+  includeRoms = true,
+): Promise<LibraryRecord[]> {
+  const games = tx.objectStore(STORES.games)
+  const ids = gameIds ?? (await requestResult(games.getAllKeys())).map(String)
+  if (ids.length > BACKUP_LIMITS.games)
+    throw new Error('一次备份或恢复最多选择 16 个游戏，请减少选择。')
+  const ordered = [...ids].sort()
+  const metadata = await Promise.all(ordered.map((id) => requestResult(games.get(id))))
+  const parsed = metadata.map((game) => (game === undefined ? undefined : gameRecord(game)))
+  if (
+    includeRoms &&
+    parsed.reduce((total, game) => total + (game?.size ?? 0), 0) > BACKUP_LIMITS.totalBytes
+  ) {
+    throw new Error('所选本地 ROM 总大小超过 64 MiB，请减少选择，或导出时不包含 ROM。')
+  }
+  const records: LibraryRecord[] = []
+  let totalBytes = 0
+  for (let index = 0; index < ordered.length; index++) {
+    const id = ordered[index]
+    const [rawRom, rawBattery, rawStates] = await Promise.all([
+      includeRoms
+        ? requestResult(tx.objectStore(STORES.roms).get(id))
+        : requestResult(tx.objectStore(STORES.roms).getKey(id)),
+      requestResult(tx.objectStore(STORES.batteries).get(id)),
+      requestResult(tx.objectStore(STORES.states).index('gameId').getAll(id)),
+    ])
+    const game = parsed[index]
+    const hasRom = rawRom !== undefined
+    const rom =
+      !includeRoms || rawRom === undefined
+        ? undefined
+        : copyBytes(rawRom.data, '游戏 ROM 数据已损坏，请重新导入游戏。')
+    const battery =
+      rawBattery === undefined
+        ? undefined
+        : copyBytes(rawBattery.data, '游戏电池存档已损坏，请导入备份存档。')
+    const states = rawStates.map(stateRecord).sort((a, b) => a.slot - b.slot)
+    if ((!game && (hasRom || battery || states.length)) || (rom && rom.byteLength !== game?.size)) {
+      throw new Error('游戏库的 ROM 或存档引用已损坏，请先修复游戏库。')
+    }
+    totalBytes +=
+      (rom?.byteLength ?? 0) +
+      (battery?.byteLength ?? 0) +
+      states.reduce(
+        (total, state) => total + state.data.byteLength + (state.screenshot?.length ?? 0) * 2,
+        0,
+      )
+    if (totalBytes > BACKUP_LIMITS.totalBytes)
+      throw new Error('所选本地 ROM 与存档总大小超过 64 MiB，请减少选择。')
+    records.push({ id, game, hasRom, rom, battery, states })
+  }
+  return records
+}
+
+function readLibrarySnapshot(gameIds?: string[], includeRoms = true): Promise<LibraryRecord[]> {
+  return transaction(Object.values(STORES), 'readonly', (tx) =>
+    readLibrary(tx, gameIds, includeRoms),
+  )
+}
+
+async function validateRomIdentities(games: { game?: Game; rom?: Uint8Array }[]): Promise<void> {
+  for (const entry of games) {
+    if (entry.rom && (!entry.game || (await sha256(entry.rom)) !== entry.game.id)) {
+      throw new Error('ROM 内容标识与游戏不匹配，请提供相同 SHA-256 的 ROM。')
+    }
+  }
+}
+
+async function prepareBackup(data: BackupData): Promise<BackupData> {
+  validateBackupData(data)
+  // Detach caller-owned buffers and choices before the first asynchronous step.
+  const copy = structuredClone(data)
+  validateBackupData(copy)
+  await validateRomIdentities(copy.games)
+  return copy
+}
+
+/** Export all four tables at one point in time. The caller first flushes live SRAM. */
+export async function getLibrarySnapshot(
+  gameIds?: string[],
+  includeRoms = false,
+): Promise<BackupData> {
+  if (
+    gameIds &&
+    (new Set(gameIds).size !== gameIds.length ||
+      gameIds.some((id) => typeof id !== 'string' || !id))
+  ) {
+    throw new Error('请选择有效且不重复的游戏。')
+  }
+  if (gameIds && gameIds.length > BACKUP_LIMITS.games)
+    throw new Error('一次备份最多选择 16 个游戏，请减少选择。')
+  const records = await readLibrarySnapshot(gameIds ? [...gameIds] : undefined, includeRoms)
+  const games: BackupGame[] = records.map((record) => {
+    if (!record.game) throw new Error('所选游戏已不存在，请刷新游戏库后重试。')
+    if (!record.hasRom) throw new Error('游戏 ROM 已丢失，请重新导入后再备份。')
+    return {
+      game: record.game,
+      ...(includeRoms ? { rom: record.rom } : {}),
+      ...(record.battery ? { battery: record.battery } : {}),
+      states: record.states,
+    }
+  })
+  const data: BackupData = {
+    formatVersion: 1,
+    exportedAt: new Date().toISOString(),
+    coreVersion: BUNDLED_CORE_ID,
+    games,
+  }
+  validateBackupData(data)
+  await validateRomIdentities(records)
+  return data
+}
+
+function gameMetadata(game?: Game): unknown {
+  return (
+    game && [
+      game.id,
+      game.title,
+      game.filename,
+      game.size,
+      game.addedAt,
+      game.lastPlayed,
+      game.playTime,
+      game.favorite,
+      game.color,
+      game.skipAutoState === true,
+    ]
+  )
+}
+
+function stateMetadata(state: SaveState): unknown {
+  return [state.id, state.gameId, state.slot, state.createdAt, state.screenshot, state.coreVersion]
+}
+
+async function libraryFingerprint(records: LibraryRecord[]): Promise<string> {
+  const summaries = []
+  for (const record of records) {
+    const states = []
+    for (const state of record.states) states.push([stateMetadata(state), await sha256(state.data)])
+    summaries.push([
+      record.id,
+      gameMetadata(record.game),
+      record.hasRom,
+      record.rom ? await sha256(record.rom) : null,
+      record.battery ? await sha256(record.battery) : null,
+      states,
+    ])
+  }
+  return sha256(new TextEncoder().encode(JSON.stringify(summaries)))
+}
+
+function equalBytes(a?: Uint8Array, b?: Uint8Array): boolean {
+  return a === undefined
+    ? b === undefined
+    : b !== undefined && a.length === b.length && a.every((byte, index) => byte === b[index])
+}
+
+/** Synchronous comparison inside the write transaction closes the preflight race. */
+function sameLibrary(a: LibraryRecord[], b: LibraryRecord[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((record, index) => {
+      const other = b[index]
+      return (
+        record.id === other.id &&
+        record.hasRom === other.hasRom &&
+        JSON.stringify(gameMetadata(record.game)) === JSON.stringify(gameMetadata(other.game)) &&
+        equalBytes(record.rom, other.rom) &&
+        equalBytes(record.battery, other.battery) &&
+        record.states.length === other.states.length &&
+        record.states.every(
+          (state, stateIndex) =>
+            JSON.stringify(stateMetadata(state)) ===
+              JSON.stringify(stateMetadata(other.states[stateIndex])) &&
+            equalBytes(state.data, other.states[stateIndex].data),
+        )
+      )
+    })
+  )
+}
+
+/** Parses and hashes in memory and opens only a read transaction; cancel is zero-write. */
+export async function previewRestore(data: BackupData): Promise<RestorePreview> {
+  const prepared = await prepareBackup(data)
+  const records = await readLibrarySnapshot(prepared.games.map((entry) => entry.game.id))
+  await validateRomIdentities(records)
+  const local = new Map(records.map((record) => [record.id, record]))
+  let totalBytes = 0
+  let stateCount = 0
+  const games = prepared.games.map((entry) => {
+    const current = local.get(entry.game.id)!
+    const states = entry.states.map((state) => ({
+      slot: state.slot,
+      createdAt: state.createdAt,
+      coreVersion: state.coreVersion,
+      conflict: current.states.some((item) => item.slot === state.slot),
+      incompatible: state.coreVersion !== BUNDLED_CORE_ID,
+    }))
+    totalBytes +=
+      (entry.rom?.byteLength ?? 0) +
+      (entry.battery?.byteLength ?? 0) +
+      new TextEncoder().encode(JSON.stringify(entry.game)).byteLength +
+      entry.states.reduce(
+        (sum, state) =>
+          sum + state.data.byteLength + new TextEncoder().encode(state.screenshot ?? '').byteLength,
+        0,
+      )
+    stateCount += states.length
+    return {
+      game: entry.game,
+      local: current.game,
+      missingRom: !entry.rom && !current.rom,
+      battery: {
+        available: Boolean(entry.battery),
+        conflict: Boolean(entry.battery && current.battery),
+      },
+      states,
+      defaults: {
+        metadata: !current.game,
+        battery: Boolean(entry.battery && !current.battery),
+        slots: states
+          .filter((state) => !state.conflict && !state.incompatible)
+          .map((state) => state.slot),
+      },
+    }
+  })
+  return { fingerprint: await libraryFingerprint(records), games, totalBytes, stateCount }
+}
+
+/** Apply explicit choices atomically after all validation and hashing has finished. */
+export async function restoreLibrary(data: BackupData, choices: RestoreChoices): Promise<void> {
+  const selected = structuredClone(choices)
+  if (
+    !selected ||
+    typeof selected.fingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(selected.fingerprint) ||
+    !selected.games ||
+    typeof selected.games !== 'object' ||
+    Array.isArray(selected.games)
+  ) {
+    throw new Error('恢复选择无效，请重新预览备份。')
+  }
+  const prepared = await prepareBackup(data)
+  const ids = prepared.games.map((entry) => entry.game.id)
+  if (Object.keys(selected.games).some((id) => !ids.includes(id)))
+    throw new Error('恢复选择包含未知游戏，请重新预览。')
+  const records = await readLibrarySnapshot(ids)
+  await validateRomIdentities(records)
+  if ((await libraryFingerprint(records)) !== selected.fingerprint)
+    throw new Error('游戏库在预览后已发生变化，请重新预览再恢复。')
+  const local = new Map(records.map((record) => [record.id, record]))
+  const writes: { entry: BackupGame; choice: RestoreGameChoice }[] = []
+  for (const entry of prepared.games) {
+    const choice = selected.games[entry.game.id]
+    if (choice === undefined) continue
+    if (
+      !choice ||
+      typeof choice.metadata !== 'boolean' ||
+      typeof choice.battery !== 'boolean' ||
+      !Array.isArray(choice.slots) ||
+      new Set(choice.slots).size !== choice.slots.length ||
+      choice.slots.some(
+        (slot) => !Number.isSafeInteger(slot) || !entry.states.some((state) => state.slot === slot),
+      ) ||
+      (choice.battery && !entry.battery)
+    ) {
+      throw new Error('恢复选择包含无效的存档或槽位，请重新预览。')
+    }
+    if (!choice.metadata && !choice.battery && !choice.slots.length) continue
+    const current = local.get(entry.game.id)!
+    if (!current.game && !choice.metadata)
+      throw new Error('新游戏需要同时恢复游戏信息，才能关联存档。')
+    if (!entry.rom && !current.rom)
+      throw new Error('所选游戏缺少 ROM，请先匹配相同 SHA-256 的 ROM。')
+    writes.push({ entry, choice })
+  }
+  if (!writes.length) return
+  return transaction(Object.values(STORES), 'readwrite', async (tx) => {
+    const current = await readLibrary(tx, ids)
+    if (!sameLibrary(records, current))
+      throw new Error('游戏库在预览后已发生变化，请重新预览再恢复。')
+    for (const { entry, choice } of writes) {
+      const id = entry.game.id
+      let game = choice.metadata ? entry.game : local.get(id)!.game!
+      if (choice.battery && !choice.slots.includes(0)) game = { ...game, skipAutoState: true }
+      else if (choice.slots.includes(0) && !choice.metadata)
+        game = { ...game, skipAutoState: false }
+      if (choice.metadata || choice.battery || choice.slots.includes(0))
+        await requestResult(tx.objectStore(STORES.games).put(game))
+      // An existing same-content ROM is retained; a supplied ROM repairs a missing one.
+      if (!local.get(id)!.rom && entry.rom)
+        await requestResult(tx.objectStore(STORES.roms).put({ id, data: entry.rom }))
+      if (choice.battery)
+        await requestResult(
+          tx.objectStore(STORES.batteries).put({ gameId: id, data: entry.battery }),
+        )
+      for (const state of entry.states) {
+        if (choice.slots.includes(state.slot))
+          await requestResult(tx.objectStore(STORES.states).put(state))
+      }
+    }
   })
 }

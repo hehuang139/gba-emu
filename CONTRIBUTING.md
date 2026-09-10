@@ -43,6 +43,8 @@ pnpm dev
 | `src/lib/input.ts`、`src/lib/touch.ts` | 输入来源管理、触屏配置与多指按键 |
 | `src/components/TouchControls.tsx`、`src/components/TouchSettings.tsx` | 触屏控件、布局与设置 |
 | `src/lib/storage.ts` | IndexedDB 数据与存档持久化 |
+| `src/lib/backup-format.ts` | 版本化备份 ZIP、边界检查、引用关系与 SHA-256 校验 |
+| `src/components/BackupManager.tsx` | 批量导出、只读预览、冲突选择与存储整理 |
 | `src/lib/import-roms.ts` | ROM / ZIP 校验、解压与大小限制 |
 | `src/lib/preferences.ts` | 用户偏好与默认按键 |
 | `scripts/` | 自制 ROM 生成和浏览器集成检查 |
@@ -80,6 +82,7 @@ pnpm test:keyboard
 pnpm test:gamepad
 pnpm test:touch
 pnpm test:startup
+pnpm test:backup
 ```
 
 | 检查 | 适用改动 |
@@ -92,6 +95,7 @@ pnpm test:startup
 | `test:gamepad` | 模拟 Gamepad API；按键 / 轴录入、死区、配置恢复、共享输入、断连 / 失焦和访问异常 |
 | `test:touch` | 合成指针、多点输入、取消 / 捕获丢失、触屏设置与 320px / 手机 / 横屏布局 |
 | `test:startup` | 环境与存储失败路径、首帧等待、启动超时及加载中释放 |
+| `test:backup` | 下载校验、预览取消、冲突选择、空白环境含 / 不含 ROM 恢复、旧实例隔离、键盘与窄屏 |
 
 测试默认连接 `http://127.0.0.1:5173`，支持以下可选环境变量：
 

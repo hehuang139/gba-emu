@@ -79,7 +79,9 @@ try {
   assert.equal(await button('暂停 (Space)').evaluate((el) => el === document.activeElement), true)
   await activate('返回游戏库')
   await button('开始试玩').waitFor()
-  await page.waitForFunction(() => document.activeElement?.textContent?.includes('开始试玩'))
+  await page.waitForFunction(
+    () => document.activeElement?.tagName === 'BUTTON' && document.activeElement.textContent?.trim() === '开始试玩',
+  )
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify(
