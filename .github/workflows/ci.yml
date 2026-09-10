@@ -47,6 +47,9 @@ jobs:
           pnpm licenses:generate
           git diff --exit-code -- public/licenses/DEPENDENCIES.txt
 
+      - name: Verify bundled core asset
+        run: pnpm verify:core
+
       - name: Run unit tests
         run: pnpm test
 
@@ -93,6 +96,18 @@ jobs:
             # each suite so its failure still leaves time for the other logs.
             timeout --kill-after=10s 180s pnpm "test:$suite" 2>&1 | tee ".artifacts/test-$suite.log" || result=1
           done
+          pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort > .artifacts/vite-preview.log 2>&1 &
+          preview_pid=$!
+          trap 'kill "$vite_pid" "$preview_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173 > /dev/null; then break; fi
+            if ! kill -0 "$preview_pid" 2>/dev/null || [ "$attempt" -eq 30 ]; then
+              cat .artifacts/vite-preview.log
+              exit 1
+            fi
+            sleep 1
+          done
+          PWA_TEST_URL=http://127.0.0.1:4173 timeout --kill-after=10s 180s pnpm test:pwa 2>&1 | tee .artifacts/test-pwa.log || result=1
           exit "$result"
 
       - name: Upload browser diagnostics on failure

@@ -53,6 +53,7 @@ import { GamepadSettings } from './components/GamepadSettings'
 import { TouchControls } from './components/TouchControls'
 import { TouchSettings } from './components/TouchSettings'
 import { BackupManager } from './components/BackupManager'
+import { OfflineStatus } from './components/OfflineStatus'
 import { createBackup } from './lib/backup-format'
 import type { BackupData } from './lib/backup-format'
 import type { Settings } from './lib/preferences'
@@ -1069,6 +1070,8 @@ export default function App() {
             <strong>{pages[page]}</strong>
           </div>
           <div className="topbar-right">
+            <OfflineStatus />
+            <span className="topbar-divider" />
             <button
               className={`environment-button ${compatibility ? (compatibility.ready ? 'ready' : 'warning') : 'pending'}`}
               onClick={() => setCompatibilityOpen((open) => !open)}

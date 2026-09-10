@@ -81,6 +81,29 @@ select {
   border: 0;
 }
 
+.offline-status {
+  position: fixed;
+  z-index: 100;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 10px 12px;
+  color: #111416;
+  background: var(--mint);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 28%);
+}
+.offline-status button {
+  padding: 6px 10px;
+  color: var(--mint);
+  background: #111416;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -505,6 +528,19 @@ button:disabled:hover {
   height: 16px;
   width: 1px;
   background: #303738;
+}
+
+.offline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.offline-status.offline {
+  color: #f4c27a;
 }
 .shortcut-button {
   display: flex;
