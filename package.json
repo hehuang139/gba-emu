@@ -22,14 +22,18 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node --experimental-strip-types --test src/lib/storage.test.ts src/lib/import-roms.test.ts src/lib/compatibility.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/emulator/*.test.ts",
     "test:engine": "node scripts/test-engine.mjs",
     "test:ui": "node scripts/test-ui.mjs",
     "test:zip": "node scripts/test-zip-import.mjs",
     "test:saves": "node scripts/test-save-flows.mjs",
     "demo:build": "node scripts/create-demo.mjs",
     "licenses:generate": "node scripts/generate-notices.mjs",
-    "screenshots": "node scripts/capture-showcase.mjs"
+    "screenshots": "node scripts/capture-showcase.mjs",
+    "test:keyboard": "node scripts/test-keyboard.mjs",
+    "test:gamepad": "node scripts/test-gamepad.mjs",
+    "test:touch": "node scripts/test-touch.mjs",
+    "test:startup": "node scripts/test-startup.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

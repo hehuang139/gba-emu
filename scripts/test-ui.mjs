@@ -83,9 +83,9 @@ try {
   await page.getByText('已恢复存档', { exact: true }).waitFor()
 
   await page.getByRole('button', { name: '控制器设置', exact: true }).click()
-  await page.getByRole('button', { name: 'X', exact: true }).click()
+  await page.getByRole('button', { name: 'A 按钮键盘映射：X', exact: true }).click()
   await page.keyboard.press('KeyV')
-  await page.getByRole('button', { name: 'V', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'A 按钮键盘映射：V', exact: true }).waitFor()
   await page.getByRole('button', { name: '完成设置' }).click()
   await page.getByRole('combobox', { name: '画面滤镜', exact: true }).selectOption('crt')
   assert.equal(await page.locator('.filter-crt').count(), 1)
@@ -110,7 +110,7 @@ try {
     'crt',
   )
   await page.getByRole('button', { name: '控制器设置', exact: true }).click()
-  await page.getByRole('button', { name: 'V', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'A 按钮键盘映射：V', exact: true }).waitFor()
   await page.getByRole('button', { name: '关闭对话框' }).click()
   await page.getByRole('button', { name: '存档管理', exact: true }).click()
   await page.locator('.state-card').nth(1).waitFor()

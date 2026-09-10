@@ -1,4 +1,6 @@
 import type { GbaButton } from '../emulator'
+import { defaultTouchConfig, normalizeTouchConfig } from './touch.ts'
+import type { TouchConfig } from './touch.ts'
 
 export type Settings = {
   volume: number
@@ -6,6 +8,7 @@ export type Settings = {
   filter: 'pixel' | 'smooth' | 'crt'
   autoSave: boolean
   touch: boolean
+  touchConfig: TouchConfig
   bindings: Record<GbaButton, string>
 }
 export const defaultBindings: Record<GbaButton, string> = {
@@ -26,28 +29,46 @@ export const defaultSettings: Settings = {
   filter: 'pixel',
   autoSave: true,
   touch: false,
+  touchConfig: defaultTouchConfig,
   bindings: defaultBindings,
+}
+export function isBindingCode(code: unknown): code is string {
+  return (
+    typeof code === 'string' &&
+    /^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Enter|Shift(Left|Right)|Bracket(Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Minus|Equal|Backquote|Numpad[0-9])$/.test(
+      code,
+    )
+  )
+}
+
+export function normalizeSettings(value: unknown): Settings {
+  const raw = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const bindings = { ...defaultBindings }
+  if (raw.bindings && typeof raw.bindings === 'object') {
+    for (const key of Object.keys(defaultBindings) as GbaButton[]) {
+      const code = (raw.bindings as Record<string, unknown>)[key]
+      if (isBindingCode(code)) bindings[key] = code
+    }
+  }
+  const unique = new Set(Object.values(bindings)).size === Object.keys(bindings).length
+  return {
+    volume:
+      typeof raw.volume === 'number' && Number.isFinite(raw.volume)
+        ? Math.max(0, Math.min(1, raw.volume))
+        : 0.65,
+    speed: raw.speed === 2 || raw.speed === 4 ? raw.speed : 1,
+    filter: raw.filter === 'smooth' || raw.filter === 'crt' ? raw.filter : 'pixel',
+    autoSave: raw.autoSave !== false,
+    touch: raw.touch === true,
+    touchConfig: normalizeTouchConfig(raw.touchConfig),
+    bindings: unique ? bindings : { ...defaultBindings },
+  }
 }
 export function readSettings(): Settings {
   try {
-    const raw = JSON.parse(localStorage.getItem('advance.settings') || '{}')
-    return {
-      volume: typeof raw.volume === 'number' ? Math.max(0, Math.min(1, raw.volume)) : 0.65,
-      speed: [1, 2, 4].includes(raw.speed) ? raw.speed : 1,
-      filter: ['pixel', 'smooth', 'crt'].includes(raw.filter) ? raw.filter : 'pixel',
-      autoSave: raw.autoSave !== false,
-      touch: raw.touch === true,
-      bindings: {
-        ...defaultBindings,
-        ...Object.fromEntries(
-          Object.entries(raw.bindings || {}).filter(
-            ([k, v]) => k in defaultBindings && typeof v === 'string',
-          ),
-        ),
-      },
-    }
+    return normalizeSettings(JSON.parse(localStorage.getItem('advance.settings') || '{}'))
   } catch {
-    return defaultSettings
+    return normalizeSettings(null)
   }
 }
 export function keyLabel(code: string) {

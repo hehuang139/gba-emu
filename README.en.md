@@ -44,7 +44,7 @@ The in-game save panel provides **one automatic slot and five manual slots**. Sa
 | Controller settings | Emulator settings |
 | :---: | :---: |
 | ![Controller settings with keyboard mappings, standard gamepad guidance and touch control toggle](docs/images/controller-settings.png) | ![Emulator settings with display style, speed, volume, automatic saves and touch controls](docs/images/emulator-settings.png) |
-| Click a key to remap it, restore default bindings or toggle on-screen controls. | Choose display style, 1× / 2× / 4× speed, volume and automatic saves. Preferences are saved automatically. |
+| Configure keyboard and gamepad mappings, stick deadzone, touch layout, size and opacity; restore defaults when needed. | Choose display style, 1× / 2× / 4× speed, volume and automatic saves. Preferences are saved automatically. |
 
 ### 3. Help and keyboard shortcuts
 
@@ -69,7 +69,7 @@ Keep favorite games together. List view shows game details and play history, wit
 
 ### 6. Mobile touch controls
 
-The mobile layout includes a D-pad, A / B, L / R and Start / Select touch buttons, alongside an accessible playback toolbar.
+The mobile layout includes a D-pad, A / B, L / R and Start / Select touch buttons and a playback toolbar. Choose standard or compact layouts and adjust button size and opacity. Multiple fingers can hold buttons simultaneously; changing orientation releases held inputs.
 
 <p align="center">
   <a href="docs/images/mobile-player.png"><img src="docs/images/mobile-player.png" width="320" alt="Advance mobile player with playback toolbar and on-screen gamepad" /></a>
@@ -83,7 +83,7 @@ The mobile layout includes a D-pad, A / B, L / R and Start / Select touch button
 - **Save states:** five manual slots and one automatic slot, screenshot previews, quick save/load and import/export.
 - **Progress management:** automatic states every 30 seconds and when returning to the library or hiding the page, when enabled; `.sav` import/export.
 - **Playback:** pause, resume, reset, fullscreen, 1× / 2× / 4× speed, hold-to-fast-forward, hold-to-rewind, volume and mute.
-- **Controls:** remappable keyboard, standard-mapped gamepads and on-screen touch buttons.
+- **Controls:** remappable keyboard; device-specific gamepad button / axis mappings and deadzone; standard / compact touch layouts with adjustable size and opacity.
 - **Display:** pixel, smooth and CRT scanline filters; screenshots from the real core framebuffer.
 - **Local data:** IndexedDB stores ROMs, library metadata and saves; localStorage stores preferences. Runtime assets are bundled without an external CDN dependency.
 - **Homebrew demo:** reproducible ARM code with double-buffered graphics, native input, PSG audio and SRAM saves.
@@ -105,7 +105,7 @@ In Star Orbit, move toward the gold beacons to collect points. Hold `X` to boost
 
 ## Controls
 
-Click the game screen to give it keyboard focus. Use `Esc` or `Shift + Tab` to return focus to the interface. GBA button mappings can be changed in controller settings.
+Launching a game focuses its screen; clicking the screen restores that focus. Gameplay keys and shortcuts apply only while the screen is focused. Use `Esc` or `Shift + Tab` to leave it, then navigate the interface with normal `Tab`, `Enter` and `Space` behavior. Closing a dialog restores its trigger's focus, and exiting a game restores the launch control. Change GBA mappings in controller settings and press `Esc` to cancel capture. Emulator shortcuts remain reserved.
 
 | Action | Default key |
 | --- | --- |
@@ -119,13 +119,17 @@ Click the game screen to give it keyboard focus. Use `Esc` or `Shift + Tab` to r
 | Rewind | Hold `Backspace` |
 | Fullscreen | `F11` |
 
-Standard-mapped gamepads support the D-pad and left stick. Press a gamepad button once to make it visible to the browser. Nonstandard gamepad mappings are not supported yet.
+Standard gamepads retain default face / shoulder / menu buttons, D-pad and left-stick mappings. Press a gamepad button once to make it visible to the browser. In controller settings, select the device, choose a GBA button, then press a physical button or move an axis. Capture can be cancelled, individual mappings cleared and defaults restored. Stick deadzone ranges from 10% to 90%. Nonstandard devices start with no guessed mappings. Profiles persist by browser-provided device identity and layout, independent of connection slot; devices with the same identity and layout share a profile.
+
+Touch settings offer standard / compact layouts, 80%–130% button size and 40%–100% opacity. Settings persist across reloads and older preferences receive safe defaults. Narrow screens constrain actual button size, and styles reserve safe-area spacing. Disconnection, blur, dialogs, pointer cancellation and pause release the relevant input. A key held by several input sources remains pressed until every source releases it. Physical phone, controller and assistive-technology coverage is documented in the [compatibility record](docs/compatibility-matrix.md).
 
 ## Import and save limits
 
 Single `.gba` files must be between 192 bytes and 32 MiB. ZIP files may be up to 64 MiB, contain up to 32 games and expand to at most 128 MiB of ROM data. Stored and Deflate compression are supported; encrypted, ZIP64, split and nested ZIP archives are not. Imports verify sizes and CRC values and ignore documentation and macOS metadata.
 
 Battery saves (`.sav`) contain a game's own saved progress. Save states capture the full emulation state and require the matching game and a compatible mGBA version. Clearing site data, ending an incognito session or browser storage eviction can delete local files, so export important saves. Force-closing the browser can lose progress since the last automatic save.
+
+The adapter waits for the current game's first completed frame before allowing save operations. Battery export reads live cartridge save data from a native state snapshot, avoiding stale SRAM when the core has not yet flushed its virtual filesystem. This change does not upgrade the bundled mGBA core or change public `.sav` / save-state formats.
 
 ## Deployment
 
@@ -159,15 +163,21 @@ pnpm test:engine
 pnpm test:ui
 pnpm test:zip
 pnpm test:saves
+pnpm test:keyboard
+pnpm test:gamepad
+pnpm test:touch
+pnpm test:startup
 ```
 
-Tests cover storage and import validation, real-core execution, input, state restoration, rewind, SRAM, worker cleanup, library interactions, ZIP imports, save isolation and mobile controls. Browser tests default to `http://127.0.0.1:5173`; use `ENGINE_TEST_URL` or `UI_TEST_URL` to override it. The engine suite requires the Vite development server because its test harness is not included in production builds. `BROWSER_EXECUTABLE_PATH` can select an installed Chromium / Chrome / Edge binary.
+Unit tests cover storage, ZIP imports, environment checks, input ownership, preference migration, gamepad / touch configuration and native battery snapshot boundaries and decompression. Browser suites cover real-core execution, state restoration, rewind, live SRAM, worker cleanup, library / save flows, keyboard focus and navigation, synthetic gamepads, touch pointers and narrow / landscape viewports. Startup regression covers failed prerequisites, storage failures, first-frame readiness, timeout and disposal during loading.
+
+Browser tests default to `http://127.0.0.1:5173`; use `ENGINE_TEST_URL` or `UI_TEST_URL` to override it. The engine, gamepad and startup suites require Vite development pages or module instrumentation. `BROWSER_EXECUTABLE_PATH` can select an installed Chromium / Chrome / Edge binary. Synthetic Gamepad API input and mobile viewports do not certify physical controllers, phones, audio quality or screen-reader usability.
 
 The [contributing guide](CONTRIBUTING.md) describes the project structure and test workflow in more detail. English Issues and PRs are welcome.
 
 ## Roadmap and compatibility
 
-Planned work includes a browser compatibility matrix, customizable gamepad and touch controls, bulk backup/restore, PWA support, UI localization and more redistributable homebrew tests. See the [full roadmap](ROADMAP.md) for scope and acceptance goals and the [changelog](CHANGELOG.md) for release history. Unchecked items are plans, not shipped features or release-date commitments.
+Gamepad and touch customization and keyboard focus improvements are implemented. Remaining work includes physical-device and screen-reader verification, broader browser / low-end-device evidence, bulk backup/restore, PWA support, UI localization and more redistributable homebrew tests. See the [full roadmap](ROADMAP.md) for scope and acceptance goals and the [changelog](CHANGELOG.md) for release history. The v1.1 validation work remains open where devices or manual evidence are missing; unchecked items are not release-date commitments.
 
 Link play, cheats, cloud sync and GB / GBC are not supported. The project has not been tested against a comprehensive commercial ROM library; individual game compatibility still needs verification.
 

@@ -1,4 +1,7 @@
 /// <reference types="vite/client" />
+import { checkRuntimePrerequisites } from '../lib/compatibility'
+import { batteryFromState } from './battery-snapshot'
+
 /** Browser adapter for the locally bundled mGBA WebAssembly core. */
 export type GbaButton = 'A' | 'B' | 'L' | 'R' | 'Start' | 'Select' | 'Up' | 'Down' | 'Left' | 'Right'
 export type EmulatorStatus = 'idle' | 'loading' | 'running' | 'paused' | 'error' | 'disposed'
@@ -80,6 +83,7 @@ type CoreFactory = (options: {
 const ROM_PATH = '/data/games/current.gba'
 const SAVE_PATH = '/data/saves/current.sav'
 const STATE_PATH = '/data/states/current.ss1'
+const BATTERY_SNAPSHOT_PATH = '/data/states/current.ss2'
 const BUTTONS: GbaButton[] = ['A', 'B', 'L', 'R', 'Start', 'Select', 'Up', 'Down', 'Left', 'Right']
 const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
@@ -105,6 +109,7 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
   let fpsStart = 0
   let pendingBattery = false
   let coreError: Error | null = null
+  let firstFrameEnded = false
 
   const setStatus = (next: EmulatorStatus) => {
     if (status === next || status === 'disposed') return
@@ -130,9 +135,25 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
     }
     return error
   }
-  const captureBattery = () => {
-    if (!core || !romName || status === 'disposed') return null
-    const data = core.getSave()
+  const captureBattery = (includePendingWrites = true) => {
+    if (!core || !romName || (status !== 'running' && status !== 'paused')) return null
+    let data: Uint8Array | null
+    if (includePendingWrites) {
+      // The core flushes cartridge writes to MEMFS only after they settle.
+      // A state snapshot reads actual cartridge memory under the native thread
+      // lock, preserving recent writes even when the game is paused at once.
+      try {
+        if (!core.saveState(2)) throw new Error('无法读取当前电池存档，请重试或先导出即时存档。')
+        data = batteryFromState(core.FS.readFile(BATTERY_SNAPSHOT_PATH), core.getSave())
+        // An older save callback must not overwrite this newer snapshot with
+        // MEMFS data that has not caught up with the cartridge's latest writes.
+        pendingBattery = false
+      } finally {
+        if (core.FS.analyzePath(BATTERY_SNAPSHOT_PATH).exists) core.FS.unlink(BATTERY_SNAPSHOT_PATH)
+      }
+    } else {
+      data = core.getSave()
+    }
     if (!data?.length) return null
     const bytes = copy(data)
     if (!sameBytes(lastSave, bytes)) {
@@ -140,6 +161,16 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       options.onSaveChange?.(copy(bytes))
     }
     return bytes
+  }
+  const captureBatteryAfterAction = () => {
+    try {
+      captureBattery()
+    } catch (value) {
+      // Pause/state restoration already succeeded. A backup failure must not
+      // change that action's status or be reported as a failed game startup.
+      const message = value instanceof Error ? value.message : String(value)
+      options.onError?.(new Error(`电池存档同步失败：${message}`))
+    }
   }
   const clearSessionFiles = () => {
     if (!core) return
@@ -161,9 +192,8 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
   const initialize = (): Promise<Core> => {
     if (initializing) return initializing
     initializing = (async () => {
-      if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
-        throw new Error('模拟核心需要跨源隔离。请使用项目的开发服务，或为网站配置 COOP 和 COEP 响应头。')
-      }
+      const unavailable = checkRuntimePrerequisites().checks.find((check) => check.status === 'error')
+      if (unavailable) throw new Error(`${unavailable.detail}。${unavailable.action || ''}`)
       options.onProgress?.('正在加载 mGBA 模拟核心…')
       const base = new URL(`${import.meta.env.BASE_URL}emulator/`, window.location.href)
       const entry = new URL('mgba.js', base).href
@@ -209,24 +239,27 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
   }
   const waitForGame = async (ticket: number) => {
     const deadline = performance.now() + 10000
-    // loadGame schedules creation of the emulation thread on the next frame.
-    // Waiting for that thread prevents quick save/import from racing startup.
-    while (!core?.hostIsGameReady()) {
+    // A pthread can exist before it executes any ROM instructions. Wait for
+    // this cartridge's first completed frame before allowing save operations.
+    while (!core?.hostIsGameReady() || !firstFrameEnded) {
       assertAlive()
       if (ticket !== generation) throw new Error('游戏载入已取消。')
       if (coreError) throw coreError
       if (performance.now() > deadline) throw new Error('游戏启动超时，请保持页面可见后重试。')
       await delay(20)
     }
-    await delay(30)
     assertAlive()
     if (ticket !== generation) throw new Error('游戏载入已取消。')
+    if (coreError) throw coreError
   }
-  const attachCallbacks = () => {
+  const attachCallbacks = (ticket: number) => {
+    firstFrameEnded = false
     fpsFrames = 0
     fpsStart = performance.now()
     core?.addCoreCallbacks({
       videoFrameEndedCallback: () => {
+        if (ticket !== generation || status === 'disposed') return
+        firstFrameEnded = true
         if (status !== 'running') return
         fpsFrames++
         const elapsed = performance.now() - fpsStart
@@ -236,14 +269,17 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
           fpsFrames = 0
         }
       },
-      coreCrashedCallback: () => { reportError(new Error('当前游戏触发了模拟核心异常，请重置或尝试其他 ROM。')) },
-      saveDataUpdatedCallback: () => { pendingBattery = true },
+      coreCrashedCallback: () => {
+        if (ticket === generation) reportError(new Error('当前游戏触发了模拟核心异常，请重置或尝试其他 ROM。'))
+      },
+      saveDataUpdatedCallback: () => { if (ticket === generation) pendingBattery = true },
     })
     window.clearInterval(batteryTimer)
     batteryTimer = window.setInterval(() => {
       if (status === 'running' && pendingBattery) {
         pendingBattery = false
-        try { captureBattery() } catch (error) { console.warn('[mGBA] 读取存档失败', error) }
+        // This path is triggered only after the core's savedata sync callback.
+        try { captureBattery(false) } catch (error) { console.warn('[mGBA] 读取存档失败', error) }
       }
     }, 1000)
   }
@@ -258,13 +294,19 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
         throw new Error('无效的 GBA ROM：文件大小应介于 192 字节与 32 MB 之间。')
       }
       if (status === 'loading') throw new Error('正在载入游戏，请稍候。')
-      const ticket = ++generation
       if (romName && core) {
         releaseAllKeys()
         core.pauseGame()
+        if (status === 'running') {
+          setStatus('paused')
+          options.onFps?.(0)
+        }
+        // Abort a cartridge switch if its current progress cannot be captured.
+        // Keep the old generation valid so this paused game can still resume.
         captureBattery()
         core.quitGame()
       }
+      const ticket = ++generation
       romName = null
       coreError = null
       lastSave = null
@@ -281,7 +323,7 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
         if (!instance.loadGame(ROM_PATH)) throw new Error('无法识别这个 ROM，请导入有效的 .gba 游戏文件。')
         // The upstream registration function mutates callback vectors without
         // locking. Install before the next animation frame starts the CPU thread.
-        attachCallbacks()
+        attachCallbacks(ticket)
         await waitForGame(ticket)
         romName = name
         instance.toggleInput(false)
@@ -291,6 +333,7 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
         setStatus('running')
         options.onProgress?.('')
       } catch (error) {
+        window.clearInterval(batteryTimer)
         if (core && status !== 'disposed') core.quitGame()
         throw reportError(error)
       }
@@ -308,9 +351,9 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       if (status !== 'running') return
       releaseAllKeys()
       assertGame().pauseGame()
-      captureBattery()
       setStatus('paused')
       options.onFps?.(0)
+      captureBatteryAfterAction()
     },
     reset() {
       const instance = assertGame()
@@ -350,7 +393,7 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       instance.FS.writeFile(STATE_PATH, copy(bytes))
       if (!instance.loadState(1)) throw new Error('无法读取此即时存档，请确认它属于当前游戏与 mGBA 核心。')
       if (status === 'paused') instance.pauseGame()
-      pendingBattery = true
+      captureBatteryAfterAction()
     },
     async exportSave() {
       assertGame()
@@ -364,10 +407,11 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
       releaseAllKeys()
       instance.quitGame()
       setStatus('loading')
+      pendingBattery = false
       try {
         instance.FS.writeFile(SAVE_PATH, copy(bytes))
         if (!instance.loadGame(ROM_PATH)) throw new Error('导入存档后重新启动游戏失败。')
-        attachCallbacks()
+        attachCallbacks(ticket)
         await waitForGame(ticket)
         instance.toggleInput(false)
         instance.setVolume(volume)
@@ -379,6 +423,8 @@ export function createEmulator(canvas: HTMLCanvasElement, options: EmulatorOptio
         if (wasPaused) emulator.pause()
         else resumeAudio()
       } catch (error) {
+        window.clearInterval(batteryTimer)
+        if (core && status !== 'disposed') core.quitGame()
         throw reportError(error)
       }
     },
