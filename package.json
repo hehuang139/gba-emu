@@ -35,7 +35,8 @@
     "test:gamepad": "node scripts/test-gamepad.mjs",
     "test:touch": "node scripts/test-touch.mjs",
     "test:startup": "node scripts/test-startup.mjs",
-    "test:backup": "node scripts/test-backup.mjs"
+    "test:backup": "node scripts/test-backup.mjs",
+    "test:pwa": "node scripts/test-pwa.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",
