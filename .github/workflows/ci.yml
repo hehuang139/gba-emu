@@ -47,6 +47,9 @@ jobs:
           pnpm licenses:generate
           git diff --exit-code -- public/licenses/DEPENDENCIES.txt
 
+      - name: Verify bundled core asset
+        run: pnpm verify:core
+
       - name: Run unit tests
         run: pnpm test
 

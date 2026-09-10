@@ -29,6 +29,7 @@
     "test:saves": "node scripts/test-save-flows.mjs",
     "demo:build": "node scripts/create-demo.mjs",
     "licenses:generate": "node scripts/generate-notices.mjs",
+    "verify:core": "node scripts/verify-core-assets.mjs",
     "screenshots": "node scripts/capture-showcase.mjs",
     "test:keyboard": "node scripts/test-keyboard.mjs",
     "test:gamepad": "node scripts/test-gamepad.mjs",

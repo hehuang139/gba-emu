@@ -178,7 +178,7 @@ The [contributing guide](CONTRIBUTING.md) describes the project structure and te
 
 ## Roadmap and compatibility
 
-Gamepad and touch customization and keyboard focus improvements are implemented. Remaining work includes physical-device and screen-reader verification, broader browser / low-end-device evidence, bulk backup/restore, PWA support, UI localization and more redistributable homebrew tests. See the [full roadmap](ROADMAP.md) for scope and acceptance goals and the [changelog](CHANGELOG.md) for release history. The v1.1 validation work remains open where devices or manual evidence are missing; unchecked items are not release-date commitments.
+Gamepad and touch customization and keyboard focus improvements are implemented. Remaining work includes physical-device and screen-reader verification, broader browser / low-end-device evidence, PWA support, UI localization and more redistributable homebrew tests. Backup and restore software is implemented; its remaining device and memory validation is tracked in the [v1.2 roadmap](docs/roadmaps/v1.2.md). See the [full roadmap](ROADMAP.md) for scope and acceptance goals and the [changelog](CHANGELOG.md) for release history. The v1.1 validation work remains open where devices or manual evidence are missing; unchecked items are not release-date commitments.
 
 Link play, cheats, cloud sync and GB / GBC are not supported. The project has not been tested against a comprehensive commercial ROM library; individual game compatibility still needs verification.
 
