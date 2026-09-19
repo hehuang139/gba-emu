@@ -1,4 +1,4 @@
-import type { GbaButton } from '../emulator'
+import type { EmulatorButton } from '../emulator'
 import { defaultTouchConfig, normalizeTouchConfig } from './touch.ts'
 import type { TouchConfig } from './touch.ts'
 
@@ -9,15 +9,17 @@ export type Settings = {
   autoSave: boolean
   touch: boolean
   touchConfig: TouchConfig
-  bindings: Record<GbaButton, string>
+  bindings: Record<EmulatorButton, string>
 }
-export const defaultBindings: Record<GbaButton, string> = {
+export const defaultBindings: Record<EmulatorButton, string> = {
   Up: 'ArrowUp',
   Down: 'ArrowDown',
   Left: 'ArrowLeft',
   Right: 'ArrowRight',
   A: 'KeyX',
   B: 'KeyZ',
+  X: 'KeyC',
+  Y: 'KeyV',
   L: 'KeyA',
   R: 'KeyS',
   Start: 'Enter',
@@ -44,10 +46,29 @@ export function isBindingCode(code: unknown): code is string {
 export function normalizeSettings(value: unknown): Settings {
   const raw = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
   const bindings = { ...defaultBindings }
-  if (raw.bindings && typeof raw.bindings === 'object') {
-    for (const key of Object.keys(defaultBindings) as GbaButton[]) {
-      const code = (raw.bindings as Record<string, unknown>)[key]
+  const rawBindings =
+    raw.bindings && typeof raw.bindings === 'object'
+      ? (raw.bindings as Record<string, unknown>)
+      : null
+  if (rawBindings) {
+    for (const key of Object.keys(defaultBindings) as EmulatorButton[]) {
+      const code = rawBindings[key]
       if (isBindingCode(code)) bindings[key] = code
+    }
+    // X/Y did not exist before multi-console support. Preserve every legacy
+    // binding and move only a newly supplied default when one is occupied.
+    for (const key of ['X', 'Y'] as const) {
+      if (rawBindings[key] !== undefined) continue
+      const occupied = new Set(
+        Object.entries(bindings)
+          .filter(([candidate]) => candidate !== key)
+          .map(([, code]) => code),
+      )
+      if (occupied.has(bindings[key])) {
+        bindings[key] = ['KeyC', 'KeyV', 'KeyB', 'KeyN', 'BracketLeft', 'BracketRight'].find(
+          (code) => !occupied.has(code),
+        )!
+      }
     }
   }
   const unique = new Set(Object.values(bindings)).size === Object.keys(bindings).length

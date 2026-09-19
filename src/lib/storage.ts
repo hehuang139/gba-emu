@@ -1,13 +1,31 @@
+import {
+  isGamePlatform,
+  PLATFORM_REGISTRY,
+  platformFromFilename,
+  ROM_FILE_EXTENSIONS,
+  type GamePlatform,
+} from './platforms.ts'
 import type { Game, SaveState } from './types.ts'
-import { BUNDLED_CORE_ID } from './core-version.ts'
-import { BACKUP_LIMITS, sha256, validateBackupData } from './backup-format.ts'
+import { BUNDLED_CORE_ID, coreIdForPlatform } from './core-version.ts'
+import { BACKUP_LIMITS, gameIdForRom, sha256, validateBackupData } from './backup-format.ts'
 import type { BackupData, BackupGame } from './backup-format.ts'
 
 const DATABASE_NAME = 'advance-gba'
 const DATABASE_VERSION = 1
-const MIN_ROM_SIZE = 192
-const MAX_ROM_SIZE = 32 * 1024 * 1024
 const STORES = { games: 'games', roms: 'roms', states: 'states', batteries: 'batteries' } as const
+
+export interface LibraryChange {
+  kind: 'content' | 'metadata'
+  gameId?: string
+}
+
+function announceLibraryChange(kind: LibraryChange['kind'], gameId?: string): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent<LibraryChange>('advance-library-changed', { detail: { kind, gameId } }),
+    )
+  }
+}
 
 function storageError(error: unknown): Error {
   if (error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)) return error
@@ -126,9 +144,105 @@ function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
+function formatSize(size: number): string {
+  if (size >= 1024 * 1024 && size % (1024 * 1024) === 0) return `${size / (1024 * 1024)} MiB`
+  if (size >= 1024 && size % 1024 === 0) return `${size / 1024} KiB`
+  return `${size} 字节`
+}
+
+function assertRomSize(platform: GamePlatform, size: number): void {
+  const { label, minRomSize, maxRomSize } = PLATFORM_REGISTRY[platform]
+  if (!Number.isInteger(size) || size < minRomSize || size > maxRomSize) {
+    throw new Error(
+      `ROM 大小无效，${label} 游戏文件应为 ${formatSize(minRomSize)}至 ${formatSize(maxRomSize)}。`,
+    )
+  }
+}
+
+function assertRomContent(platform: GamePlatform, bytes: Uint8Array): void {
+  if (
+    platform === 'nes' &&
+    (bytes[0] !== 0x4e || bytes[1] !== 0x45 || bytes[2] !== 0x53 || bytes[3] !== 0x1a)
+  ) {
+    throw new Error('无法识别 FC / NES ROM：缺少有效的 iNES 或 NES 2.0 文件头。')
+  }
+  if (platform === 'snes' && bytes.byteLength % 0x8000 !== 0 && bytes.byteLength % 0x8000 !== 512) {
+    throw new Error('无法识别 SFC / SNES ROM：文件大小不符合卡带映像或 512 字节头格式。')
+  }
+}
+
+function titleFromFilename(filename: string): string {
+  return (
+    filename
+      .replace(/\.[^.]+$/i, '')
+      .replace(/[_]+/g, ' ')
+      .trim() || '未命名游戏'
+  )
+}
+
+function decodeSnesTitle(bytes: Uint8Array): string | undefined {
+  let end = bytes.length
+  while (end && [0x00, 0x20, 0xff].includes(bytes[end - 1])) end -= 1
+  if (end < 2) return undefined
+  const value = bytes.subarray(0, end)
+  if (value.some((byte) => byte < 0x20 || byte === 0x7f)) return undefined
+  try {
+    const title = new TextDecoder('shift_jis')
+      .decode(value)
+      .replace(/\u3000/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!title || title.includes('\ufffd') || !/[\p{L}\p{N}]/u.test(title)) return undefined
+    return title
+  } catch {
+    return undefined
+  }
+}
+
+function snesTitle(bytes: Uint8Array): string | undefined {
+  const base = bytes.byteLength % 0x8000 === 512 ? 512 : 0
+  const candidates = [
+    { offset: base + 0x7fc0, modes: [0x20, 0x22, 0x30, 0x32] },
+    { offset: base + 0xffc0, modes: [0x21, 0x25, 0x31, 0x35] },
+    { offset: base + 0x40ffc0, modes: [0x25, 0x35] },
+  ]
+  let best: { score: number; title: string } | undefined
+  for (const candidate of candidates) {
+    const { offset } = candidate
+    if (offset + 0x40 > bytes.byteLength) continue
+    const title = decodeSnesTitle(bytes.subarray(offset, offset + 21))
+    if (!title) continue
+    const mapMode = bytes[offset + 0x15] & 0x3f
+    const complement = bytes[offset + 0x1c] | (bytes[offset + 0x1d] << 8)
+    const checksum = bytes[offset + 0x1e] | (bytes[offset + 0x1f] << 8)
+    const resetVector = bytes[offset + 0x3c] | (bytes[offset + 0x3d] << 8)
+    const validChecksum =
+      (checksum !== 0 || complement !== 0) &&
+      (checksum !== 0xffff || complement !== 0xffff) &&
+      ((checksum + complement) & 0xffff) === 0xffff
+    const score =
+      2 +
+      (candidate.modes.includes(mapMode) ? 4 : 0) +
+      (validChecksum ? 4 : 0) +
+      (resetVector >= 0x8000 ? 2 : 0)
+    if (score >= 8 && (!best || score > best.score)) best = { score, title }
+  }
+  return best?.title
+}
+
+function importedTitle(platform: GamePlatform, filename: string, bytes: Uint8Array): string {
+  return platform === 'snes'
+    ? (snesTitle(bytes) ?? titleFromFilename(filename))
+    : titleFromFilename(filename)
+}
+
 function gameRecord(value: unknown): Game {
   if (!value || typeof value !== 'object') throw new Error('游戏信息已损坏，请删除后重新导入 ROM。')
   const game = value as Game
+  const filenamePlatform =
+    typeof game.filename === 'string' ? platformFromFilename(game.filename) : undefined
+  // Version 1 records predate platform metadata and only contain GBA filenames.
+  const platform = game.platform === undefined && filenamePlatform === 'gba' ? 'gba' : game.platform
   if (
     typeof game.id !== 'string' ||
     !game.id ||
@@ -136,9 +250,9 @@ function gameRecord(value: unknown): Game {
     !game.title.trim() ||
     typeof game.filename !== 'string' ||
     !game.filename ||
+    !isGamePlatform(platform) ||
+    filenamePlatform !== platform ||
     !Number.isInteger(game.size) ||
-    game.size < MIN_ROM_SIZE ||
-    game.size > MAX_ROM_SIZE ||
     !isTimestamp(game.addedAt) ||
     (game.lastPlayed !== null && !isTimestamp(game.lastPlayed)) ||
     !isTimestamp(game.playTime) ||
@@ -148,7 +262,12 @@ function gameRecord(value: unknown): Game {
   ) {
     throw new Error('游戏信息已损坏，请删除后重新导入 ROM。')
   }
-  return game
+  try {
+    assertRomSize(platform, game.size)
+  } catch {
+    throw new Error('游戏信息已损坏，请删除后重新导入 ROM。')
+  }
+  return { ...game, platform }
 }
 
 function copyBytes(value: unknown, message: string): Uint8Array {
@@ -196,10 +315,32 @@ export async function getGames(): Promise<Game[]> {
   })
 }
 
+/** Upgrade filename-derived SFC titles when a valid internal ROM title is available. */
+export async function repairImportedTitles(): Promise<number> {
+  const repaired = await transaction([STORES.games, STORES.roms], 'readwrite', async (tx) => {
+    const games = (await requestResult(tx.objectStore(STORES.games).getAll())).map(gameRecord)
+    const ids: string[] = []
+    for (const game of games) {
+      if (game.platform !== 'snes' || game.title !== titleFromFilename(game.filename)) continue
+      const record = await requestResult(tx.objectStore(STORES.roms).get(game.id))
+      if (record === undefined) continue
+      const bytes = copyBytes(record.data, '游戏 ROM 数据已损坏，请重新导入游戏。')
+      if (bytes.byteLength !== game.size) continue
+      const title = snesTitle(bytes)
+      if (!title || title === game.title) continue
+      await requestResult(tx.objectStore(STORES.games).put({ ...game, title }))
+      ids.push(game.id)
+    }
+    return ids
+  })
+  for (const id of repaired) announceLibraryChange('metadata', id)
+  return repaired.length
+}
+
 export async function importGame(file: File): Promise<Game> {
-  if (!/\.gba$/i.test(file.name)) throw new Error('请选择 .gba 格式的 Game Boy Advance 游戏文件。')
-  if (file.size < MIN_ROM_SIZE || file.size > MAX_ROM_SIZE)
-    throw new Error('ROM 大小无效，GBA 游戏文件应为 192 字节至 32 MB。')
+  const platform = platformFromFilename(file.name)
+  if (!platform) throw new Error(`请选择 ${ROM_FILE_EXTENSIONS.join('、')} 格式的游戏文件。`)
+  assertRomSize(platform, file.size)
   let bytes: Uint8Array
   try {
     bytes = new Uint8Array(await file.arrayBuffer())
@@ -207,45 +348,63 @@ export async function importGame(file: File): Promise<Game> {
     throw new Error('无法读取游戏文件，请重新选择后重试。')
   }
   if (bytes.byteLength !== file.size) throw new Error('游戏文件读取不完整，请重新选择后重试。')
-  if (!globalThis.crypto?.subtle)
-    throw new Error('浏览器无法校验游戏文件，请使用 HTTPS 或 localhost 打开应用。')
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  const id = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(
-    '',
-  )
-  return transaction([STORES.games, STORES.roms], 'readwrite', async (tx) => {
+  assertRomContent(platform, bytes)
+  const id = await gameIdForRom(platform, bytes)
+  const fallbackTitle = titleFromFilename(file.name)
+  const suggestedTitle = importedTitle(platform, file.name, bytes)
+  const game = await transaction([STORES.games, STORES.roms], 'readwrite', async (tx) => {
     const existing = await requestResult(tx.objectStore(STORES.games).get(id))
     const game =
       existing === undefined
         ? ({
             id,
-            title:
-              file.name
-                .replace(/\.gba$/i, '')
-                .replace(/[_]+/g, ' ')
-                .trim() || '未命名游戏',
+            title: suggestedTitle,
             filename: file.name,
+            platform,
             size: bytes.byteLength,
             addedAt: Date.now(),
             lastPlayed: null,
             playTime: 0,
             favorite: false,
           } satisfies Game)
-        : gameRecord(existing)
+        : (() => {
+            const current = gameRecord(existing)
+            return current.title === fallbackTitle && current.title !== suggestedTitle
+              ? { ...current, title: suggestedTitle }
+              : current
+          })()
     // Reimporting deduplicates metadata while repairing any missing ROM bytes.
     await requestResult(tx.objectStore(STORES.roms).put({ id, data: bytes }))
     if (existing === undefined) await requestResult(tx.objectStore(STORES.games).add(game))
+    else if (game.title !== gameRecord(existing).title)
+      await requestResult(tx.objectStore(STORES.games).put(game))
     return game
   })
+  announceLibraryChange('content', game.id)
+  return game
 }
 
-export async function updateGame(id: string, changes: Partial<Game>): Promise<Game> {
-  return transaction([STORES.games], 'readwrite', async (tx) => {
+type GameChanges = Partial<
+  Pick<Game, 'title' | 'lastPlayed' | 'playTime' | 'favorite' | 'color' | 'skipAutoState'>
+>
+
+export async function updateGame(id: string, changes: GameChanges): Promise<Game> {
+  const game = await transaction([STORES.games], 'readwrite', async (tx) => {
     const current = await requireGame(tx, id)
-    const updated = gameRecord({ ...current, ...changes, id: current.id })
+    const updated = gameRecord({
+      ...current,
+      ...changes,
+      id: current.id,
+      filename: current.filename,
+      platform: current.platform,
+      size: current.size,
+      addedAt: current.addedAt,
+    })
     await requestResult(tx.objectStore(STORES.games).put(updated))
     return updated
   })
+  announceLibraryChange('metadata', id)
+  return game
 }
 
 export async function getRom(id: string): Promise<Uint8Array | undefined> {
@@ -259,8 +418,23 @@ export async function getRom(id: string): Promise<Uint8Array | undefined> {
   })
 }
 
+/** Cache a cloud ROM without marking saves or metadata as locally modified. */
+export async function cacheRom(id: string, data: Uint8Array): Promise<Uint8Array> {
+  const bytes = copyBytes(data, '下载的游戏 ROM 数据无效，请重试。')
+  const game = await transaction([STORES.games], 'readonly', (tx) => requireGame(tx, id))
+  if (bytes.byteLength !== game.size || (await gameIdForRom(game.platform, bytes)) !== id)
+    throw new Error('下载的游戏 ROM 与云端游戏清单不匹配。')
+  await transaction([STORES.games, STORES.roms], 'readwrite', async (tx) => {
+    const current = await requireGame(tx, id)
+    if (current.platform !== game.platform || current.size !== bytes.byteLength)
+      throw new Error('游戏清单已发生变化，请重新下载 ROM。')
+    await requestResult(tx.objectStore(STORES.roms).put({ id, data: bytes }))
+  })
+  return new Uint8Array(bytes)
+}
+
 export async function deleteGame(id: string): Promise<void> {
-  return transaction(Object.values(STORES), 'readwrite', async (tx) => {
+  await transaction(Object.values(STORES), 'readwrite', async (tx) => {
     const stateKeys = await requestResult(
       tx.objectStore(STORES.states).index('gameId').getAllKeys(id),
     )
@@ -271,6 +445,7 @@ export async function deleteGame(id: string): Promise<void> {
       ...stateKeys.map((key) => requestResult(tx.objectStore(STORES.states).delete(key))),
     ])
   })
+  announceLibraryChange('content', id)
 }
 
 export async function getStates(gameId: string): Promise<SaveState[]> {
@@ -295,29 +470,32 @@ export async function saveState(
   screenshot?: string,
 ): Promise<SaveState> {
   const id = stateId(gameId, slot)
-  const state = stateRecord({
-    id,
-    gameId,
-    slot,
-    data,
-    screenshot,
-    createdAt: Date.now(),
-    coreVersion: BUNDLED_CORE_ID,
-  })
-  return transaction([STORES.games, STORES.states], 'readwrite', async (tx) => {
+  const state = await transaction([STORES.games, STORES.states], 'readwrite', async (tx) => {
     const game = await requireGame(tx, gameId)
+    const state = stateRecord({
+      id,
+      gameId,
+      slot,
+      data,
+      screenshot,
+      createdAt: Date.now(),
+      coreVersion: coreIdForPlatform(game.platform),
+    })
     await requestResult(tx.objectStore(STORES.states).put(state))
     if (slot === 0 && game.skipAutoState)
       await requestResult(tx.objectStore(STORES.games).put({ ...game, skipAutoState: false }))
     return state
   })
+  announceLibraryChange('content', gameId)
+  return state
 }
 
 export async function deleteState(gameId: string, slot: number): Promise<void> {
   const id = stateId(gameId, slot)
-  return transaction([STORES.states], 'readwrite', async (tx) => {
+  await transaction([STORES.states], 'readwrite', async (tx) => {
     await requestResult(tx.objectStore(STORES.states).delete(id))
   })
+  announceLibraryChange('content', gameId)
 }
 
 export async function getBatterySave(gameId: string): Promise<Uint8Array | undefined> {
@@ -344,10 +522,11 @@ export async function getStorageSummary(
 
 export async function setBatterySave(gameId: string, data: Uint8Array): Promise<void> {
   const bytes = copyBytes(data, '电池存档为空或格式无效，请选择有效的 .sav 文件。')
-  return transaction([STORES.games, STORES.batteries], 'readwrite', async (tx) => {
+  await transaction([STORES.games, STORES.batteries], 'readwrite', async (tx) => {
     await requireGame(tx, gameId)
     await requestResult(tx.objectStore(STORES.batteries).put({ gameId, data: bytes }))
   })
+  announceLibraryChange('content', gameId)
 }
 
 export interface RestoreGameChoice {
@@ -460,8 +639,21 @@ function readLibrarySnapshot(gameIds?: string[], includeRoms = true): Promise<Li
 
 async function validateRomIdentities(games: { game?: Game; rom?: Uint8Array }[]): Promise<void> {
   for (const entry of games) {
-    if (entry.rom && (!entry.game || (await sha256(entry.rom)) !== entry.game.id)) {
-      throw new Error('ROM 内容标识与游戏不匹配，请提供相同 SHA-256 的 ROM。')
+    if (
+      entry.rom &&
+      (!entry.game || (await gameIdForRom(entry.game.platform, entry.rom)) !== entry.game.id)
+    ) {
+      throw new Error('ROM 内容标识与游戏平台不匹配，请提供同一平台的原始 ROM。')
+    }
+  }
+}
+
+function assertMatchingRestorePlatforms(entries: BackupGame[], records: LibraryRecord[]): void {
+  const local = new Map(records.map((record) => [record.id, record.game]))
+  for (const entry of entries) {
+    const game = local.get(entry.game.id)
+    if (game && game.platform !== entry.game.platform) {
+      throw new Error('备份游戏平台与本地同内容标识游戏不一致，无法关联 ROM 或存档。')
     }
   }
 }
@@ -492,7 +684,8 @@ export async function getLibrarySnapshot(
   const records = await readLibrarySnapshot(gameIds ? [...gameIds] : undefined, includeRoms)
   const games: BackupGame[] = records.map((record) => {
     if (!record.game) throw new Error('所选游戏已不存在，请刷新游戏库后重试。')
-    if (!record.hasRom) throw new Error('游戏 ROM 已丢失，请重新导入后再备份。')
+    if (includeRoms && !record.hasRom)
+      throw new Error('游戏 ROM 尚未下载，请先启动游戏或重新导入后再备份。')
     return {
       game: record.game,
       ...(includeRoms ? { rom: record.rom } : {}),
@@ -517,6 +710,7 @@ function gameMetadata(game?: Game): unknown {
       game.id,
       game.title,
       game.filename,
+      game.platform,
       game.size,
       game.addedAt,
       game.lastPlayed,
@@ -583,6 +777,7 @@ function sameLibrary(a: LibraryRecord[], b: LibraryRecord[]): boolean {
 export async function previewRestore(data: BackupData): Promise<RestorePreview> {
   const prepared = await prepareBackup(data)
   const records = await readLibrarySnapshot(prepared.games.map((entry) => entry.game.id))
+  assertMatchingRestorePlatforms(prepared.games, records)
   await validateRomIdentities(records)
   const local = new Map(records.map((record) => [record.id, record]))
   let totalBytes = 0
@@ -594,7 +789,7 @@ export async function previewRestore(data: BackupData): Promise<RestorePreview> 
       createdAt: state.createdAt,
       coreVersion: state.coreVersion,
       conflict: current.states.some((item) => item.slot === state.slot),
-      incompatible: state.coreVersion !== BUNDLED_CORE_ID,
+      incompatible: state.coreVersion !== coreIdForPlatform(entry.game.platform),
     }))
     totalBytes +=
       (entry.rom?.byteLength ?? 0) +
@@ -645,6 +840,7 @@ export async function restoreLibrary(data: BackupData, choices: RestoreChoices):
   if (Object.keys(selected.games).some((id) => !ids.includes(id)))
     throw new Error('恢复选择包含未知游戏，请重新预览。')
   const records = await readLibrarySnapshot(ids)
+  assertMatchingRestorePlatforms(prepared.games, records)
   await validateRomIdentities(records)
   if ((await libraryFingerprint(records)) !== selected.fingerprint)
     throw new Error('游戏库在预览后已发生变化，请重新预览再恢复。')
@@ -670,13 +866,12 @@ export async function restoreLibrary(data: BackupData, choices: RestoreChoices):
     const current = local.get(entry.game.id)!
     if (!current.game && !choice.metadata)
       throw new Error('新游戏需要同时恢复游戏信息，才能关联存档。')
-    if (!entry.rom && !current.rom)
-      throw new Error('所选游戏缺少 ROM，请先匹配相同 SHA-256 的 ROM。')
     writes.push({ entry, choice })
   }
   if (!writes.length) return
-  return transaction(Object.values(STORES), 'readwrite', async (tx) => {
+  await transaction(Object.values(STORES), 'readwrite', async (tx) => {
     const current = await readLibrary(tx, ids)
+    assertMatchingRestorePlatforms(prepared.games, current)
     if (!sameLibrary(records, current))
       throw new Error('游戏库在预览后已发生变化，请重新预览再恢复。')
     for (const { entry, choice } of writes) {
@@ -700,4 +895,5 @@ export async function restoreLibrary(data: BackupData, choices: RestoreChoices):
       }
     }
   })
+  announceLibraryChange('content')
 }

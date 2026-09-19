@@ -13,6 +13,8 @@ const labels: Record<GbaButton, string> = {
   Right: '右',
   A: 'A 按钮',
   B: 'B 按钮',
+  X: 'X 按钮',
+  Y: 'Y 按钮',
   L: 'L 肩键',
   R: 'R 肩键',
   Start: '开始',
@@ -29,12 +31,14 @@ const symbols: Partial<Record<GbaButton, string>> = {
 
 export function TouchControls({
   config,
+  buttons,
   visible,
   enabled,
   onPress,
   onRelease,
 }: {
   config: TouchConfig
+  buttons: readonly GbaButton[]
   visible: boolean
   enabled: boolean
   onPress: (button: GbaButton) => void
@@ -81,6 +85,8 @@ export function TouchControls({
   useEffect(() => {
     if (!enabled || !shown) releaseAll()
   }, [enabled, shown, releaseAll])
+
+  useEffect(releaseAll, [buttons, releaseAll])
 
   useEffect(() => {
     const pointerEnd = (event: globalThis.PointerEvent) => release(`pointer:${event.pointerId}`)
@@ -177,10 +183,12 @@ export function TouchControls({
       }
     >
       <div className="advance-touch-layout">
-        <div className="advance-touch-shoulders">
-          {key('L')}
-          {key('R')}
-        </div>
+        {buttons.includes('L') || buttons.includes('R') ? (
+          <div className="advance-touch-shoulders">
+            {buttons.includes('L') ? key('L') : null}
+            {buttons.includes('R') ? key('R') : null}
+          </div>
+        ) : null}
         <div className="advance-touch-dpad">
           {key('Up', 'advance-touch-up')}
           {key('Left', 'advance-touch-left')}
@@ -191,9 +199,11 @@ export function TouchControls({
           {key('Select')}
           {key('Start')}
         </div>
-        <div className="advance-touch-action">
+        <div className={`advance-touch-action ${buttons.includes('X') ? 'has-four-buttons' : ''}`}>
+          {buttons.includes('Y') ? key('Y', 'advance-touch-y') : null}
           {key('B')}
           {key('A')}
+          {buttons.includes('X') ? key('X', 'advance-touch-x') : null}
         </div>
       </div>
     </div>

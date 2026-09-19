@@ -32,20 +32,28 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
   Trash2,
   Upload,
+  UserRound,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react'
 import { HandheldArt, SpaceArt } from './components/Artwork'
 import { createEmulator } from './emulator'
-import type { EmulatorStatus, GbaButton, GbaEmulator } from './emulator'
+import type { Emulator, EmulatorButton, EmulatorStatus } from './emulator'
 import * as db from './lib/storage'
 import { extractRomFiles } from './lib/import-roms'
-import type { Game, SaveState } from './lib/types'
+import {
+  PLATFORM_LIST,
+  PLATFORM_REGISTRY,
+  ROM_FILE_EXTENSIONS,
+  platformSupportsButton,
+} from './lib/platforms'
+import type { Game, GamePlatform, SaveState } from './lib/types'
 import { defaultBindings, isBindingCode, keyLabel, readSettings } from './lib/preferences'
 import { createInputController } from './lib/input'
 import { useGamepads } from './hooks/useGamepads'
@@ -54,6 +62,8 @@ import { TouchControls } from './components/TouchControls'
 import { TouchSettings } from './components/TouchSettings'
 import { BackupManager } from './components/BackupManager'
 import { OfflineStatus } from './components/OfflineStatus'
+import { AccountPanel } from './components/AccountPanel'
+import { useAccountSync } from './hooks/useAccountSync'
 import { createBackup } from './lib/backup-format'
 import type { BackupData } from './lib/backup-format'
 import type { Settings } from './lib/preferences'
@@ -61,20 +71,23 @@ import { probeCompatibility } from './lib/compatibility'
 import type { CompatibilityReport } from './lib/compatibility'
 
 type Page = 'library' | 'recent' | 'favorites' | 'states'
-type Modal = 'settings' | 'controls' | 'help' | 'states' | 'backup' | null
+type Modal = 'settings' | 'controls' | 'help' | 'states' | 'backup' | 'account' | null
+type PlatformFilter = 'all' | GamePlatform
 const pages: Record<Page, string> = {
   library: '游戏库',
   recent: '最近游玩',
   favorites: '我的收藏',
   states: '存档管理',
 }
-const buttonNames: Record<GbaButton, string> = {
+const buttonNames: Record<EmulatorButton, string> = {
   Up: '上',
   Down: '下',
   Left: '左',
   Right: '右',
   A: 'A 按钮',
   B: 'B 按钮',
+  X: 'X 按钮',
+  Y: 'Y 按钮',
   L: 'L 肩键',
   R: 'R 肩键',
   Start: '开始',
@@ -97,6 +110,8 @@ const formatSize = (bytes: number) =>
   bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
 const isDemo = (game: Game) => game.filename === 'star-orbit.gba'
 const displayTitle = (game: Game) => (isDemo(game) ? 'Star Orbit · 星际漫游' : game.title)
+const acceptedGameFiles = [...ROM_FILE_EXTENSIONS, '.zip'].join(',')
+const romFormatLabel = ROM_FILE_EXTENSIONS.map((extension) => extension.toUpperCase()).join(' / ')
 
 function IconButton({
   children,
@@ -167,6 +182,7 @@ export default function App() {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('recent')
   const [layout, setLayout] = useState('grid')
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all')
   const [busy, setBusy] = useState(false)
   const [importLabel, setImportLabel] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
@@ -177,15 +193,18 @@ export default function App() {
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
   const [states, setStates] = useState<SaveState[]>([])
   const [allStates, setAllStates] = useState<SaveState[]>([])
-  const [mapping, setMapping] = useState<GbaButton | null>(null)
+  const [mapping, setMapping] = useState<EmulatorButton | null>(null)
   const [launchError, setLaunchError] = useState('')
   const [dragging, setDragging] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [gameMenu, setGameMenu] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Game | null>(null)
+  const compatibilityRenderingWarning =
+    compatibility?.checks.some((check) => check.id === 'webgl' && check.status === 'warning') ??
+    false
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stageRef = useRef<HTMLElement>(null)
-  const engineRef = useRef<GbaEmulator | null>(null)
+  const engineRef = useRef<Emulator | null>(null)
   const activeRef = useRef<Game | null>(null)
   const settingsRef = useRef(settings)
   const operationRef = useRef(false)
@@ -218,7 +237,10 @@ export default function App() {
   const inputEnabled = Boolean(active && status === 'running' && !busy && !modal && !deleteTarget)
   const gamepads = useGamepads({
     enabled: inputEnabled,
-    onPress: (button) => input.press('gamepad', button),
+    onPress: (button) => {
+      const game = activeRef.current
+      if (game && platformSupportsButton(game.platform, button)) input.press('gamepad', button)
+    },
     onRelease: (button) => input.release('gamepad', button),
   })
   const gamepad = gamepads.connected
@@ -231,6 +253,7 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), error ? 7000 : 3500)
   }, [])
   const refresh = useCallback(async () => setGames(await db.getGames()), [])
+  const account = useAccountSync({ onLibraryChanged: refresh })
   const trackWrite = useCallback(<T,>(promise: Promise<T>): Promise<T> => {
     pendingWrites.current.add(promise)
     void promise.finally(() => pendingWrites.current.delete(promise)).catch(() => {})
@@ -271,10 +294,12 @@ export default function App() {
     let cancelled = false
     async function init() {
       try {
+        await db.repairImportedTitles()
         let list = await db.getGames()
         if (!list.some(isDemo)) {
           const response = await fetch('/demo/star-orbit.gba')
-          if (!response.ok) throw new Error('试玩游戏暂时不可用，你仍可导入自己的 .gba 游戏')
+          if (!response.ok)
+            throw new Error(`试玩游戏暂时不可用，你仍可导入自己的 ${romFormatLabel} 游戏`)
           await db.importGame(new File([await response.arrayBuffer()], 'star-orbit.gba'))
           list = await db.getGames()
         }
@@ -539,8 +564,8 @@ export default function App() {
           const battery = await engine.exportSave()
           if (battery) await db.setBatterySave(activeRef.current.id, battery)
         }
-        const bytes = await db.getRom(game.id)
-        if (!bytes) throw new Error('游戏文件未找到，请重新导入')
+        const bytes = await account.ensureRom(game.id)
+        if (!bytes) throw new Error('游戏 ROM 尚未下载，请登录对应账号或重新导入')
         const battery = await db.getBatterySave(game.id)
         const currentGame = (await db.getGames()).find((item) => item.id === game.id) ?? game
         const resume =
@@ -552,9 +577,9 @@ export default function App() {
         setActive(currentGame)
         setPage('library')
         setModal(null)
-        setProgress('正在启动 mGBA 内核…')
+        setProgress(`正在启动 ${PLATFORM_REGISTRY[currentGame.platform].label} 模拟核心…`)
         setLaunchError('')
-        await engine.loadRom(bytes, game.filename)
+        await engine.loadRom(bytes, currentGame.filename, currentGame.platform)
         activeRef.current = currentGame
         if (battery) await engine.importSave(battery)
         engine.setVolume(settingsRef.current.volume)
@@ -573,7 +598,7 @@ export default function App() {
         canvasRef.current?.focus({ preventScroll: true })
         stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }),
-    [run, snapshot, notify, refresh, releaseInputs],
+    [run, snapshot, notify, refresh, releaseInputs, account],
   )
 
   const closeGame = () =>
@@ -647,7 +672,21 @@ export default function App() {
           ([key, code]) => key !== mapping && code === event.code,
         )
         if (existing) {
-          notify(`此按键已用于「${buttonNames[existing[0] as GbaButton]}」`)
+          const existingButton = existing[0] as EmulatorButton
+          const platform = activeRef.current?.platform ?? 'gba'
+          if (platformSupportsButton(platform, existingButton)) {
+            notify(`此按键已用于「${buttonNames[existingButton]}」`)
+            return
+          }
+          setSettings((value) => ({
+            ...value,
+            bindings: {
+              ...value.bindings,
+              [existingButton]: value.bindings[mapping],
+              [mapping]: event.code,
+            },
+          }))
+          setMapping(null)
           return
         }
         setSettings((value) => ({
@@ -678,10 +717,11 @@ export default function App() {
         return
       }
       if (event.code === 'Tab' && event.shiftKey) return
-      const button = (Object.entries(settings.bindings) as [GbaButton, string][]).find(
+      const button = (Object.entries(settings.bindings) as [EmulatorButton, string][]).find(
         ([, code]) => code === event.code,
       )?.[0]
       if (button) {
+        if (!platformSupportsButton(activeRef.current.platform, button)) return
         event.preventDefault()
         if (!event.repeat && inputEnabled) input.press('keyboard', button)
         return
@@ -697,7 +737,7 @@ export default function App() {
       if (event.code === 'F11') void fullscreen()
     }
     const keyup = (event: KeyboardEvent) => {
-      const button = (Object.entries(settings.bindings) as [GbaButton, string][]).find(
+      const button = (Object.entries(settings.bindings) as [EmulatorButton, string][]).find(
         ([, code]) => code === event.code,
       )?.[0]
       if (button) input.release('keyboard', button)
@@ -841,7 +881,7 @@ export default function App() {
       if (!game) return
       const bytes = (await engineRef.current?.exportSave()) || (await db.getBatterySave(game.id))
       if (!bytes?.length) throw new Error('此游戏尚未生成游戏内存档。你可以先创建即时存档。')
-      download(bytes, game.filename.replace(/\.gba$/i, '.sav'))
+      download(bytes, game.filename.replace(/\.[^.]+$/i, '.sav'))
       notify('游戏内存档已导出')
     })
   const importBattery = (file?: File) =>
@@ -859,20 +899,26 @@ export default function App() {
   const importSnapshot = (file?: File) =>
     run(async () => {
       if (!file || !activeRef.current) return
-      if (!/\.ss[0-9]?$|\.state$/i.test(file.name) || file.size < 1 || file.size > 16777216)
-        throw new Error('请选择 mGBA 即时存档（.state / .ss0，最大 16 MB）')
+      if (!/\.ss[0-9]?$|\.state$/i.test(file.name) || file.size < 1 || file.size > 32 * 1024 * 1024)
+        throw new Error('请选择当前核心生成的即时存档（.state / .ss0，最大 32 MiB）')
       await engineRef.current?.loadState(new Uint8Array(await file.arrayBuffer()))
       notify('即时存档已恢复')
       setModal(null)
     })
 
+  const pageGames = useMemo(
+    () =>
+      games.filter(
+        (game) => (page !== 'favorites' || game.favorite) && (page !== 'recent' || game.lastPlayed),
+      ),
+    [games, page],
+  )
   const visibleGames = useMemo(
     () =>
-      games
+      pageGames
         .filter(
           (game) =>
-            (page !== 'favorites' || game.favorite) &&
-            (page !== 'recent' || game.lastPlayed) &&
+            (platformFilter === 'all' || game.platform === platformFilter) &&
             displayTitle(game).toLowerCase().includes(search.toLowerCase()),
         )
         .sort((a, b) =>
@@ -882,9 +928,40 @@ export default function App() {
               ? b.addedAt - a.addedAt
               : (b.lastPlayed || 0) - (a.lastPlayed || 0) || b.addedAt - a.addedAt,
         ),
-    [games, page, search, sort],
+    [pageGames, platformFilter, search, sort],
   )
+  const selectedPlatform = platformFilter === 'all' ? undefined : PLATFORM_REGISTRY[platformFilter]
+  const emptyStateCopy = search
+    ? {
+        title: '没有找到这个游戏',
+        description: '换个关键词试试，或导入新的游戏。',
+      }
+    : page === 'favorites'
+      ? {
+          title: selectedPlatform
+            ? `还没有收藏的 ${selectedPlatform.label} 游戏`
+            : '收藏你的第一款游戏',
+          description: selectedPlatform
+            ? `在游戏库中收藏一款 ${selectedPlatform.label} 游戏，它会显示在这里。`
+            : '点击游戏卡片上的爱心，将喜欢的游戏留在这里。',
+        }
+      : page === 'recent'
+        ? {
+            title: selectedPlatform
+              ? `还没有最近游玩的 ${selectedPlatform.label} 游戏`
+              : '你的冒险即将开始',
+            description: selectedPlatform
+              ? `开始一款 ${selectedPlatform.label} 游戏，下次就能从这里快速找到。`
+              : '开始一款游戏，下次就能从这里快速找到。',
+          }
+        : {
+            title: selectedPlatform ? `还没有 ${selectedPlatform.label} 游戏` : '游戏库还是空的',
+            description: selectedPlatform
+              ? `导入 ${selectedPlatform.extensions.join(' / ')} ROM，游戏会自动归入此平台。`
+              : '点击导入，添加你的第一款游戏。',
+          }
   const demo = games.find(isDemo)
+  const activePlatform = PLATFORM_REGISTRY[active?.platform ?? 'gba']
   const canControl = Boolean(active && ['running', 'paused'].includes(status) && !busy)
   const setSetting = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setSettings((previous) => ({ ...previous, [key]: value }))
@@ -893,7 +970,6 @@ export default function App() {
     setSearch('')
     setSidebarOpen(false)
   }
-
   return (
     <div
       className="app-shell"
@@ -922,7 +998,7 @@ export default function App() {
       <input
         ref={inputRef}
         type="file"
-        accept=".gba,.zip"
+        accept={acceptedGameFiles}
         multiple
         hidden
         onChange={(event) => {
@@ -971,7 +1047,7 @@ export default function App() {
           </span>
         </a>
         <div className="workspace-label">
-          你的掌机游戏空间 <span>BETA</span>
+          你的经典游戏空间 <span>BETA</span>
         </div>
         <div className="nav-group-title">工作台</div>
         <nav aria-label="主导航">
@@ -999,6 +1075,21 @@ export default function App() {
         </nav>
         <div className="nav-group-title second">偏好设置</div>
         <nav aria-label="偏好设置">
+          <button
+            className="nav-item"
+            onClick={() => {
+              setModal('account')
+              setSidebarOpen(false)
+            }}
+          >
+            <UserRound size={18} />
+            <span className="account-nav-label" title={account.user?.username}>
+              {account.user ? account.user.username : '登录与同步'}
+            </span>
+            {account.phase === 'syncing' ? (
+              <LoaderCircle size={14} className="account-spinner" aria-label="正在同步" />
+            ) : null}
+          </button>
           <button className="nav-item" disabled={busy || !ready} onClick={() => void openBackup()}>
             <HardDrive size={18} />
             <span>备份与恢复</span>
@@ -1029,15 +1120,15 @@ export default function App() {
             <div className="local-note-icon">
               <ShieldCheck size={19} />
             </div>
-            <strong>只属于你的游戏时光</strong>
+            <strong>{account.user ? '账号同步已开启' : '只属于你的游戏时光'}</strong>
             <p>
-              游戏与存档保存在此设备，
+              {account.user ? '游戏与存档已保存到账号，' : '游戏与存档保存在此设备，'}
               <br />
-              无需账号，随时开始。
+              {account.user ? '换个浏览器也能继续。' : '登录后可跨浏览器恢复。'}
             </p>
             <span>
               <span className="status-dot" />
-              本地运行 · 隐私优先
+              {account.user ? `已登录 · ${account.user.username}` : '本地运行 · 隐私优先'}
             </span>
           </div>
           <button className="help-link" onClick={() => setModal('help')}>
@@ -1046,10 +1137,12 @@ export default function App() {
             <span className="version">v1.0</span>
           </button>
           <div className="sidebar-footer">
-            <span className="avatar">P</span>
+            <span className="avatar">
+              {account.user?.username.slice(0, 1).toUpperCase() ?? 'P'}
+            </span>
             <div>
-              <strong>Player One</strong>
-              <small>今天也要玩得开心</small>
+              <strong>{account.user?.username ?? 'Player One'}</strong>
+              <small>{account.user ? account.message : '今天也要玩得开心'}</small>
             </div>
             <span className="online-dot" />
           </div>
@@ -1073,7 +1166,7 @@ export default function App() {
             <OfflineStatus />
             <span className="topbar-divider" />
             <button
-              className={`environment-button ${compatibility ? (compatibility.ready ? 'ready' : 'warning') : 'pending'}`}
+              className={`environment-button ${compatibility ? (compatibility.ready && !compatibilityRenderingWarning ? 'ready' : 'warning') : 'pending'}`}
               onClick={() => setCompatibilityOpen((open) => !open)}
               aria-expanded={compatibilityOpen}
               aria-controls="compatibility-panel"
@@ -1082,8 +1175,10 @@ export default function App() {
               disabled={!compatibility}
             >
               {compatibility ? (
-                compatibility.ready ? (
+                compatibility.ready && !compatibilityRenderingWarning ? (
                   <ShieldCheck size={16} />
+                ) : compatibility.ready ? (
+                  <ShieldAlert size={16} />
                 ) : (
                   <CloudOff size={16} />
                 )
@@ -1114,9 +1209,11 @@ export default function App() {
               <div>
                 <strong>运行环境检查</strong>
                 <p>
-                  {compatibility.ready
-                    ? '模拟器运行所需能力已就绪。'
-                    : '有能力未满足，可能导致核心无法启动。'}
+                  {!compatibility.ready
+                    ? '有能力未满足，可能导致核心无法启动。'
+                    : compatibilityRenderingWarning
+                      ? '可以启动；部分能力将使用兼容模式。'
+                      : '模拟器运行所需能力已就绪。'}
                 </p>
               </div>
               <button
@@ -1180,26 +1277,33 @@ export default function App() {
 
           <section
             ref={stageRef}
-            className={`player-panel ${active ? 'visible' : ''}`}
-            aria-label="GBA 游戏画面"
+            className={`player-panel platform-${activePlatform.id} ${active ? 'visible' : ''}`}
+            aria-label={`${activePlatform.label} 游戏画面`}
           >
             <div className="player-heading">
               <div>
                 <span className={`status-dot ${status === 'running' ? '' : 'paused'}`} />
-                <strong>{active ? displayTitle(active) : 'GBA'}</strong>
-                <span className="pill">GAME BOY ADVANCE</span>
+                <strong>{active ? displayTitle(active) : activePlatform.label}</strong>
+                <span className="pill">{activePlatform.name.toUpperCase()}</span>
               </div>
               <IconButton label="返回游戏库" onClick={() => void closeGame()} disabled={busy}>
                 <X size={18} />
               </IconButton>
             </div>
-            <div className={`canvas-wrap filter-${settings.filter}`}>
+            <div
+              className={`canvas-wrap filter-${settings.filter}`}
+              style={
+                {
+                  '--screen-aspect': `${activePlatform.nativeWidth} / ${activePlatform.nativeHeight}`,
+                } as CSSProperties
+              }
+            >
               <canvas
                 ref={canvasRef}
-                width={240}
-                height={160}
+                width={activePlatform.nativeWidth}
+                height={activePlatform.nativeHeight}
                 tabIndex={0}
-                aria-label="GBA 模拟器画面"
+                aria-label={`${activePlatform.label} 模拟器画面`}
                 aria-describedby="player-keyboard-help"
                 onBlur={() => {
                   input.clear('keyboard')
@@ -1308,6 +1412,7 @@ export default function App() {
             </p>
             <TouchControls
               config={settings.touchConfig}
+              buttons={activePlatform.buttons}
               visible={settings.touch}
               enabled={inputEnabled}
               onPress={(button) => input.press('touch', button)}
@@ -1381,6 +1486,29 @@ export default function App() {
                   </div>
                 </div>
                 <div className="library-tools">
+                  <div className="platform-filter" role="group" aria-label="按游戏平台筛选">
+                    <button
+                      className={platformFilter === 'all' ? 'active' : ''}
+                      aria-pressed={platformFilter === 'all'}
+                      onClick={() => setPlatformFilter('all')}
+                    >
+                      全部
+                    </button>
+                    {PLATFORM_LIST.map((platform) => (
+                      <button
+                        key={platform.id}
+                        className={platformFilter === platform.id ? 'active' : ''}
+                        data-platform={platform.id}
+                        aria-pressed={platformFilter === platform.id}
+                        onClick={() => setPlatformFilter(platform.id)}
+                      >
+                        {platform.label}
+                        <span>
+                          {pageGames.filter((game) => game.platform === platform.id).length}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                   <label className="search-field">
                     <Search size={16} />
                     <input
@@ -1422,6 +1550,7 @@ export default function App() {
                       >
                         <button
                           className="game-cover"
+                          data-platform={game.platform}
                           aria-label={`开始 ${displayTitle(game)}`}
                           onClick={() => void playGame(game)}
                           disabled={busy}
@@ -1443,16 +1572,14 @@ export default function App() {
                             <div className="generic-cover">
                               <div className="cartridge">
                                 <Gamepad2 size={34} />
-                                <span>
-                                  GAME BOY
-                                  <br />
-                                  <b>ADVANCE</b>
-                                </span>
+                                <span>{PLATFORM_REGISTRY[game.platform].name.toUpperCase()}</span>
                               </div>
                               <span className="generic-title">{game.title}</span>
                             </div>
                           )}
-                          <span className="cover-platform">GBA</span>
+                          <span className="cover-platform" data-platform={game.platform}>
+                            {PLATFORM_REGISTRY[game.platform].label}
+                          </span>
                           {isDemo(game) && <span className="demo-badge">原创试玩</span>}
                           <span className="cover-play">
                             <Play size={22} fill="currentColor" />
@@ -1522,7 +1649,7 @@ export default function App() {
                         </div>
                       </article>
                     ))}
-                    {page === 'library' && !search && (
+                    {page === 'library' && !search && platformFilter === 'all' && (
                       <button
                         className="import-card"
                         disabled={busy}
@@ -1534,45 +1661,34 @@ export default function App() {
                         <strong>下一场冒险，由你选择</strong>
                         <p>点击导入，或将游戏文件拖到这里</p>
                         <span className="file-tag">
-                          .gba / .zip<span>自动解压</span>
+                          {romFormatLabel} / ZIP<span>自动解压</span>
                         </span>
                       </button>
                     )}
-                    {visibleGames.length === 0 && (page !== 'library' || search) && (
-                      <div className="empty-state">
-                        {search ? (
-                          <Search size={30} />
-                        ) : page === 'favorites' ? (
-                          <Heart size={30} />
-                        ) : (
-                          <Clock3 size={30} />
-                        )}
-                        <h3>
-                          {search
-                            ? '没有找到这个游戏'
-                            : page === 'favorites'
-                              ? '收藏你的第一款游戏'
-                              : '你的冒险即将开始'}
-                        </h3>
-                        <p>
-                          {search
-                            ? '换个关键词试试，或导入新的游戏。'
-                            : page === 'favorites'
-                              ? '点击游戏卡片上的爱心，将喜欢的游戏留在这里。'
-                              : '开始一款游戏，下次就能从这里快速找到。'}
-                        </p>
-                        <button
-                          className="button secondary"
-                          onClick={() => {
-                            setPage('library')
-                            setSearch('')
-                          }}
-                        >
-                          返回游戏库
-                          <ArrowRight size={15} />
-                        </button>
-                      </div>
-                    )}
+                    {visibleGames.length === 0 &&
+                      (page !== 'library' || search || platformFilter !== 'all') && (
+                        <div className="empty-state">
+                          {search ? (
+                            <Search size={30} />
+                          ) : page === 'favorites' ? (
+                            <Heart size={30} />
+                          ) : (
+                            <Clock3 size={30} />
+                          )}
+                          <h3>{emptyStateCopy.title}</h3>
+                          <p>{emptyStateCopy.description}</p>
+                          <button
+                            className="button secondary"
+                            onClick={() => {
+                              setPage('library')
+                              setSearch('')
+                            }}
+                          >
+                            返回游戏库
+                            <ArrowRight size={15} />
+                          </button>
+                        </div>
+                      )}
                   </div>
                 )}
                 <div className="library-note">
@@ -1697,7 +1813,7 @@ export default function App() {
                 </div>
                 <div className="core-status">
                   <span className="status-dot" />
-                  <span>mGBA 引擎</span>
+                  <span>{engineRef.current?.version ?? '多核心引擎'}</span>
                   <span>WASM</span>
                 </div>
               </aside>
@@ -1726,7 +1842,16 @@ export default function App() {
                       const game = games.find((g) => g.id === state.gameId)
                       return (
                         game && (
-                          <article key={state.id} className="state-card">
+                          <article
+                            key={state.id}
+                            className="state-card"
+                            data-platform={game.platform}
+                            style={
+                              {
+                                '--screen-aspect': `${PLATFORM_REGISTRY[game.platform].nativeWidth} / ${PLATFORM_REGISTRY[game.platform].nativeHeight}`,
+                              } as CSSProperties
+                            }
+                          >
                             {state.screenshot ? (
                               <img src={state.screenshot} alt={`${displayTitle(game)} 存档画面`} />
                             ) : (
@@ -1737,6 +1862,9 @@ export default function App() {
                             <div>
                               <span className="slot-label">
                                 {state.slot === 0 ? '自动存档' : `存档位 ${state.slot}`}
+                              </span>
+                              <span className="state-platform" data-platform={game.platform}>
+                                {PLATFORM_REGISTRY[game.platform].label}
                               </span>
                               <h3>{displayTitle(game)}</h3>
                               <p>{formatDate(state.createdAt)}</p>
@@ -1789,7 +1917,7 @@ export default function App() {
             </span>
             <span>
               <CloudOff size={13} />
-              本地游戏，本地存档，无需账号
+              {account.user ? '本地运行，账号同步已开启' : '本地游戏，本地存档，可选账号同步'}
             </span>
           </footer>
         </main>
@@ -1826,9 +1954,11 @@ export default function App() {
                         ? '你的模拟器，你来定义'
                         : modal === 'backup'
                           ? '备份与恢复'
-                          : modal === 'states'
-                            ? '给冒险留个书签'
-                            : '准备好，开始冒险'}
+                          : modal === 'account'
+                            ? '账号与游戏同步'
+                            : modal === 'states'
+                              ? '给冒险留个书签'
+                              : '准备好，开始冒险'}
                 </h2>
               </div>
               <IconButton
@@ -1878,6 +2008,8 @@ export default function App() {
                   setBusy(value)
                 }}
               />
+            ) : modal === 'account' ? (
+              <AccountPanel account={account} />
             ) : modal === 'controls' ? (
               <>
                 <p className="modal-description">
@@ -1897,23 +2029,25 @@ export default function App() {
                   </div>
                 </div>
                 <div className="key-bindings">
-                  {(Object.keys(defaultBindings) as GbaButton[]).map((key) => (
-                    <div className="key-binding" key={key}>
-                      <span>{buttonNames[key]}</span>
-                      <button
-                        className={mapping === key ? 'listening' : ''}
-                        aria-label={`${buttonNames[key]}键盘映射：${mapping === key ? '按下新按键' : keyLabel(settings.bindings[key])}`}
-                        onClick={() => setMapping(key)}
-                      >
-                        {mapping === key ? '按下新按键…' : keyLabel(settings.bindings[key])}
-                      </button>
-                    </div>
-                  ))}
+                  {(Object.keys(defaultBindings) as EmulatorButton[])
+                    .filter((key) => platformSupportsButton(activePlatform.id, key))
+                    .map((key) => (
+                      <div className="key-binding" key={key}>
+                        <span>{buttonNames[key]}</span>
+                        <button
+                          className={mapping === key ? 'listening' : ''}
+                          aria-label={`${buttonNames[key]}键盘映射：${mapping === key ? '按下新按键' : keyLabel(settings.bindings[key])}`}
+                          onClick={() => setMapping(key)}
+                        >
+                          {mapping === key ? '按下新按键…' : keyLabel(settings.bindings[key])}
+                        </button>
+                      </div>
+                    ))}
                 </div>
                 <p className="sr-only" role="status">
                   {mapping ? `正在设置${buttonNames[mapping]}，按 Escape 取消` : ''}
                 </p>
-                <GamepadSettings controller={gamepads} />
+                <GamepadSettings controller={gamepads} buttons={activePlatform.buttons} />
                 <TouchSettings
                   config={settings.touchConfig}
                   onChange={(value) => setSetting('touchConfig', value)}
@@ -1959,7 +2093,7 @@ export default function App() {
                 <div className="modal-setting">
                   <div>
                     <strong>画面显示</strong>
-                    <p>原生像素最接近 GBA 的真实画面</p>
+                    <p>原生像素会保留当前平台的画面比例</p>
                   </div>
                   <select
                     value={settings.filter}
@@ -2109,14 +2243,13 @@ export default function App() {
                   </button>
                 </div>
                 <p className="small-note">
-                  .sav 是游戏内的电池存档；导入后会重启游戏。即时存档请使用当前游戏生成的 mGBA
-                  存档。
+                  .sav 是游戏内存档；导入后会重启游戏。即时存档须由当前游戏和同一模拟核心生成。
                 </p>
               </>
             ) : (
               <>
                 <p className="modal-description">
-                  Advance 是一个在浏览器中运行的 GBA 模拟器。导入你的 .gba 或 .zip
+                  Advance 是一个在浏览器中运行的经典游戏空间。导入 {romFormatLabel} 或 .ZIP
                   游戏，或先体验内置的原创游戏 Star Orbit。
                 </p>
                 <div className="help-steps">
@@ -2124,17 +2257,17 @@ export default function App() {
                     <span>01</span>
                     <strong>带上你的游戏</strong>
                     <p>
-                      点击「导入游戏」，或拖入 .gba / .zip 文件。ZIP
-                      中的游戏会自动解压，包括子文件夹。单个 ROM 最大 32 MB，ZIP 最大 64
-                      MB，每包最多 32 个游戏、解压合计 128 MB；不支持密码压缩包。
+                      点击「导入游戏」，或拖入 {romFormatLabel} / .ZIP 文件。ZIP
+                      中的游戏会自动识别平台并解压，包括子文件夹。各平台按独立大小限制校验；ZIP 最大
+                      64 MiB，每包最多 32 个游戏、解压合计 128 MiB。
                     </p>
                   </div>
                   <div>
                     <span>02</span>
                     <strong>用熟悉的方式玩</strong>
                     <p>
-                      点击游戏画面后，方向键移动，X / Z 对应 A / B，A / S 对应肩键，Enter 开始，右
-                      Shift 选择。按 Esc 离开游戏焦点。
+                      点击游戏画面后，方向键移动，X / Z 对应 A / B，C / V 对应 X / Y，A / S
+                      对应肩键，Enter 开始，右 Shift 选择。按 Esc 离开游戏焦点。
                     </p>
                   </div>
                   <div>
@@ -2170,7 +2303,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="small-note">
-                  基于 mGBA WebAssembly 内核 · 商业游戏需自行提供合法获得的
+                  基于 mGBA、FCEUmm 与 Snes9x WebAssembly 内核 · 商业游戏需自行提供合法获得的
                   ROM。暂不支持联机、作弊码与密码压缩包。
                 </p>
               </>
@@ -2183,7 +2316,7 @@ export default function App() {
           <div>
             <Upload size={40} />
             <h2>放下游戏，开启冒险。</h2>
-            <p>支持 .gba / .zip · ROM 最大 32 MB · ZIP 最大 64 MB · 自动解压游戏</p>
+            <p>支持 {romFormatLabel} / .ZIP · 自动识别平台并解压游戏</p>
           </div>
         </div>
       )}
